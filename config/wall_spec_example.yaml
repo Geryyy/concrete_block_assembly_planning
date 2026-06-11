@@ -1,0 +1,20 @@
+# Example compact wall specification.
+# Expand with:  ros2 run concrete_block_assembly_planning wall_expander \
+#                 wall_spec_example.yaml -o wall_plans_generated.yaml -n my_wall
+wall:
+  name: example_wall
+  block_size: [0.9, 0.6, 0.6]   # [X, Y, Z] m; X=depth, Z=height
+  length_axis: x                # block X axis runs along the wall length
+  clearance:
+    horizontal: 0.02            # gap between blocks within a course
+    vertical: 0.0               # mortar gap between courses
+  gripper_yaw_offset_deg: 90.0
+  origin:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    yaw_deg: 0.0
+  origin_frame: world
+  courses:
+    - {count: 3, offset: 0.0}    # bottom course
+    - {count: 2, offset: 0.46}   # half-block running-bond offset

@@ -1,0 +1,5 @@
+/**:
+  ros__parameters:
+    # World model integration
+    world_model_service: "/world_model_node/get_coarse_blocks"
+    world_model_timeout_s: 2.0
