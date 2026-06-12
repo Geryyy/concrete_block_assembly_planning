@@ -1,0 +1,43 @@
+defaults:
+  block_size: [0.6, 0.9, 0.6]
+
+wall_plans:
+  stack_block_1_on_block_2:
+    sequence:
+      - id: "block_1"
+        relative_to_world_model: "block_2"
+        offset: [0.0, 0.0, 0.6]
+        fallback_absolute_position: [6.0, 0.25, -0.345]
+        yaw_deg: 0.0
+        gripper_yaw_offset_deg: 90.0
+
+  pzs100_pick_place:
+    sequence:
+      - id: "block_1"
+        absolute_position: [5.0, 2.0, -0.84]
+        yaw_deg: 0.0
+      - id: "block_2"
+        absolute_position: [5.0, -2.0, -0.84]
+        yaw_deg: 0.0
+
+  basic_interlocking_3_2:
+    sequence:
+      - id: "B0"
+        absolute_position: [-11.025, 0.239662, 3.0]
+        yaw_deg: 96.2006
+      - id: "B1"
+        relative_to: "B0"
+        offset: [0.62, 0.0, 0.0]
+        yaw_deg: 0.0
+      - id: "B2"
+        relative_to: "B1"
+        offset: [0.62, 0.0, 0.0]
+        yaw_deg: 0.0
+      - id: "T0"
+        relative_to: "B0"
+        offset: [0.31, 0.0, 0.6]
+        yaw_deg: 0.0
+      - id: "T1"
+        relative_to: "T0"
+        offset: [0.62, 0.0, 0.0]
+        yaw_deg: 0.0

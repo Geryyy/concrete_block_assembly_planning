@@ -12,9 +12,9 @@ wall:
   origin:
     x: 0.0
     y: 0.0
-    z: 0.0
-    yaw_deg: 0.0
+    z: 0.3
+    yaw_deg: 45.0
   origin_frame: world
   courses:
     - {count: 3, offset: 0.0}    # bottom course
-    - {count: 2, offset: 0.46}   # half-block running-bond offset
+    - {count: 2, offset: 0.3}   # half-block running-bond offset
