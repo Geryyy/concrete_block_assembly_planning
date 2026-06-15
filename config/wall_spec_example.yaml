@@ -10,11 +10,14 @@ wall:
     vertical: 0.0               # mortar gap between courses
   gripper_yaw_offset_deg: 90.0
   origin:
-    x: 0.0
-    y: 0.0
+    x: -10
+    y: 1.0
     z: 0.3
     yaw_deg: 45.0
   origin_frame: world
   courses:
     - {count: 3, offset: 0.0}    # bottom course
     - {count: 2, offset: 0.3}   # half-block running-bond offset
+
+
+
