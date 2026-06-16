@@ -10,10 +10,10 @@ wall:
     vertical: 0.0               # mortar gap between courses
   gripper_yaw_offset_deg: 90.0
   origin:
-    x: -10
-    y: 1.0
+    x: -12
+    y: -4
     z: 0.3
-    yaw_deg: 45.0
+    yaw_deg: 0.0
   origin_frame: world
   courses:
     - {count: 3, offset: 0.0}    # bottom course
