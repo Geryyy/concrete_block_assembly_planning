@@ -83,17 +83,17 @@ def test_topo_order_is_bottom_up():
             assert pos[s] < pos[bid]
 
 
-def test_to_wall_plan_relative_chaining():
+def test_to_wall_plan_absolute_positions():
     blocks, meta = compute_layout(SPEC)
     seq = to_wall_plan(blocks, meta)
     by_id = {item["id"]: item for item in seq}
-    # first block absolute, rest relative
-    assert "absolute_position" in by_id["c0_b0"]
-    assert by_id["c0_b1"]["relative_to"] == "c0_b0"
-    assert math.isclose(by_id["c0_b1"]["offset"][0], 1.0)  # one pitch along +x
-    # first of higher course chains to first of course below
-    assert by_id["c1_b0"]["relative_to"] == "c0_b0"
-    assert math.isclose(by_id["c1_b0"]["offset"][2], 0.6)  # up one block height
+    # every block carries an absolute position; none are relative
+    assert all("absolute_position" in item for item in seq)
+    assert all("relative_to" not in item for item in seq)
+    # absolute positions match the layout (origin 1,2,0; pitch 1.0; course height 0.6)
+    assert by_id["c0_b0"]["absolute_position"] == [1.0, 2.0, 0.0]
+    assert by_id["c0_b2"]["absolute_position"] == [3.0, 2.0, 0.0]
+    assert by_id["c1_b0"]["absolute_position"] == [1.5, 2.0, 0.6]
     # gripper offset propagated
     assert by_id["c0_b0"]["gripper_yaw_offset_deg"] == 90.0
 

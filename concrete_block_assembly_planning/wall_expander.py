@@ -5,8 +5,8 @@ The compact spec describes a wall parametrically (block size, clearances,
 origin, yaw, and a list of courses with a block count and a running-bond
 offset). :func:`compute_layout` turns that into absolute per-block poses in the
 world frame plus a support graph; :func:`to_wall_plan` re-expresses the same
-blocks in the existing ``wall_plans.yaml`` schema (origin-relative chaining so
-placement error does not accumulate across the wall).
+blocks in the existing ``wall_plans.yaml`` schema as absolute per-block
+positions.
 
 This module is pure Python (no rclpy) so it can be unit tested directly.
 
@@ -155,42 +155,21 @@ def topo_order(blocks):
 
 
 def to_wall_plan(blocks, meta: dict) -> list:
-    """Re-express blocks as a ``wall_plans.yaml`` sequence with relative chaining.
+    """Re-express blocks as a ``wall_plans.yaml`` sequence of absolute positions.
 
-    - first block of the wall: ``absolute_position``
-    - first block of each higher course: ``relative_to`` the first block below
-    - every other block: ``relative_to`` the previous block in its course
-
-    Offsets are world-axis deltas (matching the wall plan server's resolver,
-    which adds offsets componentwise).
+    ``compute_layout`` already places every block absolutely from the origin, so
+    each block is emitted with an ``absolute_position`` (in the world frame). No
+    error accumulates across the wall and the resulting plan is simple to read
+    and consume.
     """
     gripper_yaw = meta.get("gripper_yaw_offset_deg")
     seq = []
-    prev_in_course: dict[int, dict] = {}
-    first_of_course: dict[int, dict] = {}
-
     for b in blocks:
-        i, j = b["course"], b["index"]
         item = {"id": b["id"], "yaw_deg": b["yaw_deg"]}
         if gripper_yaw is not None:
             item["gripper_yaw_offset_deg"] = gripper_yaw
-
-        if i == 0 and j == 0:
-            item["absolute_position"] = [round(v, 6) for v in (b["x"], b["y"], b["z"])]
-        else:
-            ref = prev_in_course[i] if j > 0 else first_of_course[i - 1]
-            item["relative_to"] = ref["id"]
-            item["offset"] = [
-                round(b["x"] - ref["x"], 6),
-                round(b["y"] - ref["y"], 6),
-                round(b["z"] - ref["z"], 6),
-            ]
-
+        item["absolute_position"] = [round(v, 6) for v in (b["x"], b["y"], b["z"])]
         seq.append(item)
-        prev_in_course[i] = b
-        if j == 0:
-            first_of_course[i] = b
-
     return seq
 
 
