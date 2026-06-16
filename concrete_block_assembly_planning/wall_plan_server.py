@@ -68,10 +68,19 @@ class WallPlanServer(Node):
         self.declare_parameter(
             "world_model_set_goal_service", "/world_model_node/set_block_goal"
         )
+        # Pre-place approach: a point this far above the target, offset laterally
+        # along the wall build direction so the descent comes in at this angle
+        # (clearance from the already-placed neighbour).
+        self.declare_parameter("place_approach_height_m", 0.30)
+        self.declare_parameter("place_approach_angle_deg", 4.0)
 
         self._wm_service_name = self.get_parameter("world_model_service").value
         self._wm_timeout = self.get_parameter("world_model_timeout_s").value
         self._output_frame = self.get_parameter("output_frame").value
+        self._approach_height = self.get_parameter("place_approach_height_m").value
+        self._approach_angle = math.radians(
+            self.get_parameter("place_approach_angle_deg").value
+        )
         self._cb_group = ReentrantCallbackGroup()
 
         # World model client (for live block poses)
@@ -205,6 +214,7 @@ class WallPlanServer(Node):
         """
         resolved = {}
         tasks = []
+        prev_pos = None
         for idx, item in enumerate(plan_data.get("sequence", [])):
             block_id = item["id"]
             yaw_rad = math.radians(item.get("yaw_deg", 0.0))
@@ -245,6 +255,16 @@ class WallPlanServer(Node):
 
             resolved[block_id] = pos
             task_id = f"{plan_name}_{idx + 1:02d}_{block_id}"
+            # Build direction: from the previous block in the same course (same z)
+            # toward this one — i.e. away from the just-placed neighbour. None at
+            # course starts (no same-course neighbour placed yet -> straight down).
+            build_dir = None
+            if prev_pos is not None and abs(pos[2] - prev_pos[2]) < 1e-3:
+                dx, dy = pos[0] - prev_pos[0], pos[1] - prev_pos[1]
+                norm = math.hypot(dx, dy)
+                if norm > 1e-6:
+                    build_dir = [dx / norm, dy / norm]
+            prev_pos = pos
             tasks.append({
                 "task_id": task_id,
                 "block_id": block_id,
@@ -254,6 +274,7 @@ class WallPlanServer(Node):
                 "target_mode": target_mode,
                 "reference_block_id": reference_block_id,
                 "offset": offset,
+                "build_dir": build_dir,
             })
         return tasks
 
@@ -402,6 +423,14 @@ class WallPlanServer(Node):
 
         target_tool_yaw = normalize_angle(block_target_yaw + gripper_yaw_offset)
 
+        # Pre-place point: above the target, offset laterally along the build
+        # direction so the descent approaches at place_approach_angle_deg.
+        lateral = self._approach_height * math.tan(self._approach_angle)
+        build_dir = task.get("build_dir")
+        ax = x + lateral * build_dir[0] if build_dir else x
+        ay = y + lateral * build_dir[1] if build_dir else y
+        az = z + self._approach_height
+
         response.success = True
         response.has_task = True
         response.task_id = task_id
@@ -412,6 +441,7 @@ class WallPlanServer(Node):
         response.pickup_pose = self._make_pose(px, py, pz, pickup_tool_yaw)
         response.target_pose = self._make_pose(x, y, z, target_tool_yaw)
         response.reference_pose = self._make_pose(x, y, z, block_target_yaw)
+        response.approach_pose = self._make_pose(ax, ay, az, target_tool_yaw)
         response.message = f"Task {idx + 1}/{len(tasks)}: {block_id}"
 
         self.get_logger().info(
