@@ -3,3 +3,8 @@
     # World model integration
     world_model_service: "/world_model_node/get_coarse_blocks"
     world_model_timeout_s: 2.0
+    # Pre-place angled approach
+    place_approach_height_m: 0.30
+    place_approach_angle_deg: 4.0
+    # Pre-pick approach (straight above the pickup)
+    pickup_approach_height_m: 0.30
