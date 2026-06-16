@@ -73,6 +73,8 @@ class WallPlanServer(Node):
         # (clearance from the already-placed neighbour).
         self.declare_parameter("place_approach_height_m", 0.30)
         self.declare_parameter("place_approach_angle_deg", 4.0)
+        # Pre-pick point: this far straight above the pickup pose.
+        self.declare_parameter("pickup_approach_height_m", 0.30)
 
         self._wm_service_name = self.get_parameter("world_model_service").value
         self._wm_timeout = self.get_parameter("world_model_timeout_s").value
@@ -81,6 +83,7 @@ class WallPlanServer(Node):
         self._approach_angle = math.radians(
             self.get_parameter("place_approach_angle_deg").value
         )
+        self._pickup_approach_height = self.get_parameter("pickup_approach_height_m").value
         self._cb_group = ReentrantCallbackGroup()
 
         # World model client (for live block poses)
@@ -439,6 +442,8 @@ class WallPlanServer(Node):
         # All poses are raw block CoG — grip server handles TCP offset
         # Pose orientation carries the desired TCP yaw for the BT motion nodes.
         response.pickup_pose = self._make_pose(px, py, pz, pickup_tool_yaw)
+        response.pickup_approach_pose = self._make_pose(
+            px, py, pz + self._pickup_approach_height, pickup_tool_yaw)
         response.target_pose = self._make_pose(x, y, z, target_tool_yaw)
         response.reference_pose = self._make_pose(x, y, z, block_target_yaw)
         response.approach_pose = self._make_pose(ax, ay, az, target_tool_yaw)
