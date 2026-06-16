@@ -22,6 +22,7 @@ from rclpy.executors import MultiThreadedExecutor
 from ament_index_python.packages import get_package_share_directory
 
 from concrete_block_assembly_interfaces.srv import GetNextAssemblyTask
+from concrete_block_world_model_interfaces.msg import Block
 from concrete_block_world_model_interfaces.srv import GetCoarseBlocks, SetBlockGoal
 from geometry_msgs.msg import PoseStamped
 from std_srvs.srv import Trigger
@@ -256,8 +257,8 @@ class WallPlanServer(Node):
             })
         return tasks
 
-    def _query_block_pose(self, block_id: str):
-        """Query world model for a block's pose. Returns (x, y, z, yaw) or None."""
+    def _get_world_model_blocks(self):
+        """Return the current world-model blocks list, or None on failure."""
         if not self._wm_client.service_is_ready():
             self.get_logger().warn(
                 f"World model service '{self._wm_service_name}' not available, "
@@ -283,7 +284,15 @@ class WallPlanServer(Node):
             )
             return None
 
-        for block in result.blocks.blocks:
+        return result.blocks.blocks
+
+    def _query_block_pose(self, block_id: str):
+        """Query world model for a block's actual pose. Returns (x, y, z, yaw) or None."""
+        blocks = self._get_world_model_blocks()
+        if blocks is None:
+            return None
+
+        for block in blocks:
             if block.id == block_id:
                 p = block.pose.position
                 yaw = quaternion_to_yaw(block.pose.orientation)
@@ -296,6 +305,19 @@ class WallPlanServer(Node):
         self.get_logger().warn(
             f"Block '{block_id}' not found in world model, using YAML fallback"
         )
+        return None
+
+    def _query_block_goal(self, block_id: str):
+        """Query world model for a block's goal pose. Returns (x, y, z, yaw) or None."""
+        blocks = self._get_world_model_blocks()
+        if blocks is None:
+            return None
+
+        for block in blocks:
+            if block.id == block_id and block.goal_status == Block.GOAL_SET:
+                p = block.goal_pose.position
+                yaw = quaternion_to_yaw(block.goal_pose.orientation)
+                return (p.x, p.y, p.z, yaw)
         return None
 
     def _make_pose(self, x, y, z, yaw_rad, frame=None):
@@ -369,7 +391,14 @@ class WallPlanServer(Node):
             else:
                 target_source = "fallback_yaml"
         else:
-            target_source = "yaml"
+            # Place pose comes from the world model goal (unified scene); the
+            # plan's resolved YAML position is the fallback if no goal is set.
+            goal_pose = self._query_block_goal(block_id)
+            if goal_pose is not None:
+                x, y, z, block_target_yaw = goal_pose
+                target_source = "world_model_goal"
+            else:
+                target_source = "yaml"
 
         target_tool_yaw = normalize_angle(block_target_yaw + gripper_yaw_offset)
 
