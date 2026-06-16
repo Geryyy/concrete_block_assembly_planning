@@ -22,7 +22,7 @@ from rclpy.executors import MultiThreadedExecutor
 from ament_index_python.packages import get_package_share_directory
 
 from concrete_block_assembly_interfaces.srv import GetNextAssemblyTask
-from concrete_block_world_model_interfaces.srv import GetCoarseBlocks
+from concrete_block_world_model_interfaces.srv import GetCoarseBlocks, SetBlockGoal
 from geometry_msgs.msg import PoseStamped
 from std_srvs.srv import Trigger
 
@@ -60,6 +60,13 @@ class WallPlanServer(Node):
         # Frame all emitted poses are expressed in. The whole stack standardizes
         # on `world`; conversion to K0_mounting_base happens at the MP boundary.
         self.declare_parameter("output_frame", "world")
+        # Which plan's targets to publish into the world model as block goals
+        # (empty = the only loaded plan). Makes the world model the unified
+        # source of both actual and goal poses.
+        self.declare_parameter("goal_plan_name", "")
+        self.declare_parameter(
+            "world_model_set_goal_service", "/world_model_node/set_block_goal"
+        )
 
         self._wm_service_name = self.get_parameter("world_model_service").value
         self._wm_timeout = self.get_parameter("world_model_timeout_s").value
@@ -99,6 +106,16 @@ class WallPlanServer(Node):
             self._handle_reload,
             callback_group=self._cb_group,
         )
+        # Publish the plan's block goals into the world model (unified scene).
+        self._goal_plan_name = self.get_parameter("goal_plan_name").value
+        self._goal_service_name = self.get_parameter("world_model_set_goal_service").value
+        self._goal_client = self.create_client(
+            SetBlockGoal, self._goal_service_name, callback_group=self._cb_group
+        )
+        self._goal_timer = self.create_timer(
+            1.0, self._try_publish_goals, callback_group=self._cb_group
+        )
+
         self.get_logger().info(
             f"Wall plan server ready (output_frame={self._output_frame})"
         )
@@ -106,6 +123,8 @@ class WallPlanServer(Node):
     def _load_wall_plans(self):
         """(Re)load wall plans from ``wall_plans_file``. Returns the plan count."""
         self.get_logger().info(f"Loading wall plans from {self._wall_plan_path}")
+        # Re-arm goal publishing so a reload re-pushes goals to the world model.
+        self._goals_published = False
         with open(self._wall_plan_path) as f:
             data = yaml.safe_load(f) or {}
 
@@ -130,6 +149,50 @@ class WallPlanServer(Node):
             response.message = f"Reload failed: {ex}"
         self.get_logger().info(response.message)
         return response
+
+    # ---- world-model goal publishing -------------------------------------
+
+    def _resolve_goal_plan_name(self):
+        """Which loaded plan's targets to publish as goals, or '' if ambiguous."""
+        name = self._goal_plan_name
+        if name:
+            if name in self._wall_plans:
+                return name
+            if name.lower() in self._wall_plans:
+                return name.lower()
+            return ""
+        if len(self._wall_plans) == 1:
+            return next(iter(self._wall_plans))
+        return ""
+
+    def _try_publish_goals(self):
+        """Push the plan's resolved targets into the world model as block goals."""
+        if self._goals_published:
+            return
+        plan_name = self._resolve_goal_plan_name()
+        if not plan_name:
+            self._goals_published = True
+            self.get_logger().warn(
+                "goal_plan_name unset and not exactly one plan loaded; "
+                "not publishing block goals to the world model"
+            )
+            return
+        if not self._goal_client.service_is_ready():
+            return  # world model not up yet; retry on the next tick
+
+        tasks = self._wall_plans.get(plan_name, [])
+        for task in tasks:
+            req = SetBlockGoal.Request()
+            req.block_id = task["block_id"]
+            x, y, z = task["position"]
+            req.goal_pose = self._make_pose(x, y, z, task["yaw"]).pose
+            req.frame_id = self._output_frame
+            self._goal_client.call_async(req)
+        self._goals_published = True
+        self.get_logger().info(
+            f"Published {len(tasks)} block goal(s) for plan '{plan_name}' "
+            f"to {self._goal_service_name}"
+        )
 
     def _resolve_plan(self, plan_name, plan_data):
         """Resolve plan sequence into task dictionaries.
