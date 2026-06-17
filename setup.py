@@ -28,6 +28,7 @@ setup(
             "wall_expander = concrete_block_assembly_planning.wall_expander:main",
             "wall_setup_node = concrete_block_assembly_planning.wall_setup_node:main",
             "wall_preview_node = concrete_block_assembly_planning.wall_preview_node:main",
+            "check_pose_feasibility = concrete_block_assembly_planning.check_pose_feasibility:main",
         ],
     },
 )

@@ -24,6 +24,7 @@
   <depend>concrete_block_world_model_interfaces</depend>
 
   <exec_depend>rviz2</exec_depend>
+  <exec_depend>timber_crane_planning_interfaces</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
