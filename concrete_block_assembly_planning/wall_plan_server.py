@@ -73,7 +73,12 @@ class WallPlanServer(Node):
         # (clearance from the already-placed neighbour).
         self.declare_parameter("place_approach_height_m", 0.30)
         self.declare_parameter("place_approach_angle_deg", 4.0)
-        # Pre-pick point: this far straight above the pickup pose.
+        # A2B endpoint Z values, expressed in output_frame. The grip trajectory
+        # handles the low final descent from these high clearances.
+        self.declare_parameter("pickup_a2b_approach_z_m", 3.141)
+        self.declare_parameter("place_a2b_approach_z_m", 3.741)
+        # Legacy fallback: relative pre-pick height if pickup_a2b_approach_z_m
+        # is set to a negative value.
         self.declare_parameter("pickup_approach_height_m", 0.30)
 
         self._wm_service_name = self.get_parameter("world_model_service").value
@@ -83,6 +88,8 @@ class WallPlanServer(Node):
         self._approach_angle = math.radians(
             self.get_parameter("place_approach_angle_deg").value
         )
+        self._place_a2b_approach_z = self.get_parameter("place_a2b_approach_z_m").value
+        self._pickup_a2b_approach_z = self.get_parameter("pickup_a2b_approach_z_m").value
         self._pickup_approach_height = self.get_parameter("pickup_approach_height_m").value
         self._cb_group = ReentrantCallbackGroup()
 
@@ -426,13 +433,14 @@ class WallPlanServer(Node):
 
         target_tool_yaw = normalize_angle(block_target_yaw + gripper_yaw_offset)
 
-        # Pre-place point: above the target, offset laterally along the build
-        # direction so the descent approaches at place_approach_angle_deg.
+        # Pre-place point: offset laterally along the build direction so the
+        # descent approaches at place_approach_angle_deg. Z is the high A2B
+        # carry clearance; CalcGripMovement handles the low final descent.
         lateral = self._approach_height * math.tan(self._approach_angle)
         build_dir = task.get("build_dir")
         ax = x + lateral * build_dir[0] if build_dir else x
         ay = y + lateral * build_dir[1] if build_dir else y
-        az = z + self._approach_height
+        az = self._place_a2b_approach_z
 
         response.success = True
         response.has_task = True
@@ -441,9 +449,13 @@ class WallPlanServer(Node):
         response.reference_block_id = reference_block_id
         # All poses are raw block CoG — grip server handles TCP offset
         # Pose orientation carries the desired TCP yaw for the BT motion nodes.
+        pickup_approach_z = (
+            self._pickup_a2b_approach_z
+            if self._pickup_a2b_approach_z >= 0.0
+            else pz + self._pickup_approach_height
+        )
         response.pickup_pose = self._make_pose(px, py, pz, pickup_tool_yaw)
-        response.pickup_approach_pose = self._make_pose(
-            px, py, pz + self._pickup_approach_height, pickup_tool_yaw)
+        response.pickup_approach_pose = self._make_pose(px, py, pickup_approach_z, pickup_tool_yaw)
         response.target_pose = self._make_pose(x, y, z, target_tool_yaw)
         response.reference_pose = self._make_pose(x, y, z, block_target_yaw)
         response.approach_pose = self._make_pose(ax, ay, az, target_tool_yaw)

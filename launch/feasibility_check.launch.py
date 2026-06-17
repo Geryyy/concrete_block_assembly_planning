@@ -50,9 +50,12 @@ def generate_launch_description():
                 # [0.40, 1.42]; the init-pose value 1.5708 is out of range, so use
                 # a valid mid-range jaw angle (negligible effect on arm reach).
                 "q0": [0.785, 0.523599, 0.523602, 0.25, 0.546470, 1.570521, 0.0, 1.0],
-                "pickup_approach_height_m": 0.30,
+                "pickup_a2b_approach_z_m": 3.141,
+                "pickup_approach_height_m": 1.50,
                 "place_approach_height_m": 0.30,
                 "place_approach_angle_deg": 4.0,
+                "place_a2b_approach_z_m": 3.741,
+                "service_cooldown_s": 0.20,
                 "world_to_k0_xyz": [-6.939, 0.350, 1.141],
                 "world_to_k0_yaw_deg": 180.0,
             }],
