@@ -3,6 +3,7 @@
     # World model integration
     world_model_service: "/world_model_node/get_coarse_blocks"
     world_model_timeout_s: 2.0
+    goal_plan_name: "example_wall"
     # Pre-place angled approach
     place_approach_height_m: 0.30
     place_approach_angle_deg: 4.0
@@ -10,5 +11,3 @@
     # map through world->K0 to pickup K0 z=2.0 m and place K0 z=2.6 m.
     pickup_a2b_approach_z_m: 3.141
     place_a2b_approach_z_m: 3.741
-    # Legacy fallback only: used if pickup_a2b_approach_z_m is negative.
-    pickup_approach_height_m: 1.5

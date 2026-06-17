@@ -76,14 +76,12 @@ class FeasibilityChecker(Node):
         self.declare_parameter("wall_plans_file", "")
         self.declare_parameter("wall_plan_name", "example_wall")
         self.declare_parameter("a2b_service", "/a2b_movement")
-        # Start joint config (init pose). q0[8] = theta1,theta2,theta3,q4,theta6,theta7,theta8,theta10
         # q0[8] = theta1,theta2,theta3,q4,theta6,theta7,theta8,theta10. theta10
         # (gripper jaw) must be within the a2b limit [0.40, 1.42] — the init-pose
         # value 1.5708 is out of range, so default to a valid mid-range angle.
         self.declare_parameter(
             "q0", [0.785, 0.523599, 0.523602, 0.25, 0.546470, 1.570521, 0.0, 1.0])
         self.declare_parameter("pickup_a2b_approach_z_m", 3.141)
-        self.declare_parameter("pickup_approach_height_m", 1.50)
         self.declare_parameter("place_approach_height_m", 0.30)
         self.declare_parameter("place_approach_angle_deg", 4.0)
         self.declare_parameter("place_a2b_approach_z_m", 3.741)
@@ -97,15 +95,12 @@ class FeasibilityChecker(Node):
         self._plan_name = self.get_parameter("wall_plan_name").value
         self._q0 = [float(v) for v in self.get_parameter("q0").value]
         self._pickup_a2b_z_world = self.get_parameter("pickup_a2b_approach_z_m").value
-        self._pickup_h = self.get_parameter("pickup_approach_height_m").value
         self._place_h = self.get_parameter("place_approach_height_m").value
         self._place_ang = math.radians(self.get_parameter("place_approach_angle_deg").value)
         self._place_a2b_z_world = self.get_parameter("place_a2b_approach_z_m").value
         self._service_cooldown = self.get_parameter("service_cooldown_s").value
         self._k0_off = list(self.get_parameter("world_to_k0_xyz").value)
         self._k0_yaw = math.radians(self.get_parameter("world_to_k0_yaw_deg").value)
-        self.get_logger().info(
-            "A2B seed q0=" + ", ".join(f"{v:.3f}" for v in self._q0))
 
         svc = self.get_parameter("a2b_service").value
         self._cli = self.create_client(CalcMovement, svc)
@@ -143,12 +138,8 @@ class FeasibilityChecker(Node):
         # contact pose is solved by the grip-trajectory IK.
         for bid, (x, y, z, yaw) in seed.items():
             tcp = math.radians(yaw + offsets.get(bid, 90.0))
-            approach_z = (
-                self._pickup_a2b_z_world
-                if self._pickup_a2b_z_world >= 0.0
-                else z + self._pickup_h
-            )
-            poses.append((f"{bid} pickup_approach", x, y, approach_z, tcp, True))
+            poses.append((
+                f"{bid} pickup_approach", x, y, self._pickup_a2b_z_world, tcp, True))
             poses.append((f"{bid} pickup", x, y, z, tcp, False))
 
         # Place side: A2B goes to lateral pre-place X/Y at carry clearance.

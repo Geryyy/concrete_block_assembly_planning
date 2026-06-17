@@ -77,9 +77,6 @@ class WallPlanServer(Node):
         # handles the low final descent from these high clearances.
         self.declare_parameter("pickup_a2b_approach_z_m", 3.141)
         self.declare_parameter("place_a2b_approach_z_m", 3.741)
-        # Legacy fallback: relative pre-pick height if pickup_a2b_approach_z_m
-        # is set to a negative value.
-        self.declare_parameter("pickup_approach_height_m", 0.30)
 
         self._wm_service_name = self.get_parameter("world_model_service").value
         self._wm_timeout = self.get_parameter("world_model_timeout_s").value
@@ -90,7 +87,6 @@ class WallPlanServer(Node):
         )
         self._place_a2b_approach_z = self.get_parameter("place_a2b_approach_z_m").value
         self._pickup_a2b_approach_z = self.get_parameter("pickup_a2b_approach_z_m").value
-        self._pickup_approach_height = self.get_parameter("pickup_approach_height_m").value
         self._cb_group = ReentrantCallbackGroup()
 
         # World model client (for live block poses)
@@ -449,13 +445,9 @@ class WallPlanServer(Node):
         response.reference_block_id = reference_block_id
         # All poses are raw block CoG — grip server handles TCP offset
         # Pose orientation carries the desired TCP yaw for the BT motion nodes.
-        pickup_approach_z = (
-            self._pickup_a2b_approach_z
-            if self._pickup_a2b_approach_z >= 0.0
-            else pz + self._pickup_approach_height
-        )
         response.pickup_pose = self._make_pose(px, py, pz, pickup_tool_yaw)
-        response.pickup_approach_pose = self._make_pose(px, py, pickup_approach_z, pickup_tool_yaw)
+        response.pickup_approach_pose = self._make_pose(
+            px, py, self._pickup_a2b_approach_z, pickup_tool_yaw)
         response.target_pose = self._make_pose(x, y, z, target_tool_yaw)
         response.reference_pose = self._make_pose(x, y, z, block_target_yaw)
         response.approach_pose = self._make_pose(ax, ay, az, target_tool_yaw)
