@@ -7,4 +7,4 @@
     place_approach_height_m: 0.30
     place_approach_angle_deg: 4.0
     # Pre-pick approach (straight above the pickup)
-    pickup_approach_height_m: 0.30
+    pickup_approach_height_m: 1.5
