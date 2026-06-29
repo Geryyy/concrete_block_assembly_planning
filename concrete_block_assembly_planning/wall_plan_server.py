@@ -105,6 +105,7 @@ class WallPlanServer(Node):
 
         self._wall_plans = {}
         self._progress = {}
+        self._block_bindings = {}
         self._load_wall_plans()
 
         # Services
@@ -146,13 +147,27 @@ class WallPlanServer(Node):
 
         self._wall_plans = {}
         self._progress = {}
+        self._block_bindings = {}
+        global_bindings = data.get("block_bindings", {}) or {}
         for plan_name, plan_data in data.get("wall_plans", {}).items():
             tasks = self._resolve_plan(plan_name, plan_data)
             self._wall_plans[plan_name] = tasks
             self._progress[plan_name] = 0
+            raw_bindings = plan_data.get("block_bindings")
+            if raw_bindings is None and isinstance(global_bindings, dict):
+                raw_bindings = global_bindings.get(plan_name, {})
+            bindings = self._normalize_block_bindings(plan_name, raw_bindings or {}, tasks)
+            self._block_bindings[plan_name] = bindings
             self.get_logger().info(
                 f"Loaded wall plan '{plan_name}' with {len(tasks)} tasks"
             )
+            if bindings:
+                pretty = ", ".join(
+                    f"{slot}->{physical}" for slot, physical in bindings.items()
+                )
+                self.get_logger().info(
+                    f"Wall plan '{plan_name}' block bindings: {pretty}"
+                )
         return len(self._wall_plans)
 
     def _handle_reload(self, request, response):
@@ -198,17 +213,89 @@ class WallPlanServer(Node):
 
         tasks = self._wall_plans.get(plan_name, [])
         for task in tasks:
+            slot_id = task["block_id"]
+            physical_id = self._physical_block_id(plan_name, slot_id)
             req = SetBlockGoal.Request()
-            req.block_id = task["block_id"]
+            req.block_id = physical_id
             x, y, z = task["position"]
             req.goal_pose = self._make_pose(x, y, z, task["yaw"]).pose
             req.frame_id = self._output_frame
             self._goal_client.call_async(req)
+            self.get_logger().info(
+                f"Publishing wall goal | plan={plan_name} slot={slot_id} "
+                f"physical={physical_id} target=({x:.2f}, {y:.2f}, {z:.2f})"
+            )
         self._goals_published = True
         self.get_logger().info(
             f"Published {len(tasks)} block goal(s) for plan '{plan_name}' "
             f"to {self._goal_service_name}"
         )
+
+    def _normalize_block_bindings(self, plan_name, raw_bindings, tasks):
+        """Return {wall_slot_id: physical_block_id} from YAML bindings.
+
+        The preferred YAML shape is slot -> physical, e.g. c0_b0: block_0.
+        For convenience while editing configs, physical -> slot is accepted too.
+        """
+        slot_ids = {task["block_id"] for task in tasks}
+        bindings = {}
+
+        if not raw_bindings:
+            return bindings
+        if not isinstance(raw_bindings, dict):
+            self.get_logger().warn(
+                f"Plan '{plan_name}': block_bindings must be a mapping, ignoring"
+            )
+            return bindings
+
+        used_physical = set()
+        for key, value in raw_bindings.items():
+            left = str(key)
+            right = str(value)
+
+            if left in slot_ids:
+                slot_id = left
+                physical_id = right
+            elif right in slot_ids:
+                slot_id = right
+                physical_id = left
+                self.get_logger().info(
+                    f"Plan '{plan_name}': interpreted binding '{left}: {right}' "
+                    f"as slot={slot_id} physical={physical_id}"
+                )
+            else:
+                self.get_logger().warn(
+                    f"Plan '{plan_name}': ignoring block binding '{left}: {right}' "
+                    "because neither side matches a wall-plan slot"
+                )
+                continue
+
+            if slot_id in bindings:
+                self.get_logger().warn(
+                    f"Plan '{plan_name}': duplicate binding for slot '{slot_id}', "
+                    f"keeping '{bindings[slot_id]}' and ignoring '{physical_id}'"
+                )
+                continue
+            if physical_id in used_physical:
+                self.get_logger().warn(
+                    f"Plan '{plan_name}': physical block '{physical_id}' is mapped "
+                    "more than once"
+                )
+            bindings[slot_id] = physical_id
+            used_physical.add(physical_id)
+
+        missing = [slot for slot in slot_ids if slot not in bindings]
+        if missing:
+            self.get_logger().warn(
+                f"Plan '{plan_name}': no physical binding for slot(s) "
+                f"{', '.join(sorted(missing))}; falling back to slot ids"
+            )
+
+        return bindings
+
+    def _physical_block_id(self, plan_name: str, slot_id: str) -> str:
+        """Map a wall-plan slot id to the physical world-model block id."""
+        return self._block_bindings.get(plan_name, {}).get(slot_id, slot_id)
 
     def _resolve_plan(self, plan_name, plan_data):
         """Resolve plan sequence into task dictionaries.
@@ -321,6 +408,12 @@ class WallPlanServer(Node):
 
         for block in blocks:
             if block.id == block_id:
+                if block.pose_status == Block.POSE_UNKNOWN:
+                    self.get_logger().warn(
+                        f"Block '{block_id}' is known only as a goal "
+                        "(POSE_UNKNOWN), waiting for a physical pose"
+                    )
+                    return None
                 p = block.pose.position
                 yaw = quaternion_to_yaw(block.pose.orientation)
                 self.get_logger().info(
@@ -387,21 +480,46 @@ class WallPlanServer(Node):
 
         task = tasks[idx]
         task_id = task["task_id"]
-        block_id = task["block_id"]
+        slot_id = task["block_id"]
+        physical_block_id = self._physical_block_id(plan_name, slot_id)
         x, y, z = task["position"]
         block_target_yaw = task["yaw"]
         gripper_yaw_offset = task.get("gripper_yaw_offset", 0.0)
-        reference_block_id = task.get("reference_block_id", "")
-        self._progress[plan_name] = idx + 1
+        reference_slot_id = task.get("reference_block_id", "")
+        reference_block_id = (
+            self._physical_block_id(plan_name, reference_slot_id)
+            if reference_slot_id else ""
+        )
 
-        # Query world model for actual pickup pose; fall back to YAML
-        wm_pose = self._query_block_pose(block_id)
-        if wm_pose is not None:
-            px, py, pz, pickup_block_yaw = wm_pose
-            pose_source = "world_model"
-        else:
-            px, py, pz, pickup_block_yaw = x, y, z, block_target_yaw
-            pose_source = "yaml"
+        self.get_logger().info(
+            f"Assembly binding | plan={plan_name} task={task_id} "
+            f"slot={slot_id} physical={physical_block_id} "
+            f"reference_slot={reference_slot_id or '<none>'} "
+            f"reference_physical={reference_block_id or '<none>'}"
+        )
+
+        # Query world model for the physical pickup pose. Goal-only entries are
+        # not movable yet; keep the plan index parked on this task until the
+        # physical block has been discovered/seeded.
+        wm_pose = self._query_block_pose(physical_block_id)
+        if wm_pose is None:
+            response.success = False
+            response.has_task = True
+            response.task_id = task_id
+            response.target_block_id = physical_block_id
+            response.reference_block_id = reference_block_id
+            response.message = (
+                f"Waiting for physical block '{physical_block_id}' "
+                f"for wall slot '{slot_id}'"
+            )
+            self.get_logger().warn(
+                f"GetNextAssemblyTask waiting | plan={plan_name} task={task_id} "
+                f"slot={slot_id} physical={physical_block_id}: no usable pose"
+            )
+            return response
+
+        px, py, pz, pickup_block_yaw = wm_pose
+        pose_source = "world_model"
 
         pickup_tool_yaw = normalize_angle(pickup_block_yaw + gripper_yaw_offset)
 
@@ -416,16 +534,32 @@ class WallPlanServer(Node):
                 block_target_yaw = normalize_angle(ryaw + task["yaw"])
                 target_source = f"world_model:{reference_block_id}"
             else:
-                target_source = "fallback_yaml"
+                response.success = False
+                response.has_task = True
+                response.task_id = task_id
+                response.target_block_id = physical_block_id
+                response.reference_block_id = reference_block_id
+                response.message = (
+                    f"Waiting for reference block '{reference_block_id}' "
+                    f"for wall slot '{slot_id}'"
+                )
+                self.get_logger().warn(
+                    f"GetNextAssemblyTask waiting | plan={plan_name} task={task_id} "
+                    f"reference_slot={reference_slot_id} "
+                    f"reference_physical={reference_block_id}: no usable pose"
+                )
+                return response
         else:
             # Place pose comes from the world model goal (unified scene); the
             # plan's resolved YAML position is the fallback if no goal is set.
-            goal_pose = self._query_block_goal(block_id)
+            goal_pose = self._query_block_goal(physical_block_id)
             if goal_pose is not None:
                 x, y, z, block_target_yaw = goal_pose
                 target_source = "world_model_goal"
             else:
                 target_source = "yaml"
+
+        self._progress[plan_name] = idx + 1
 
         target_tool_yaw = normalize_angle(block_target_yaw + gripper_yaw_offset)
 
@@ -441,7 +575,7 @@ class WallPlanServer(Node):
         response.success = True
         response.has_task = True
         response.task_id = task_id
-        response.target_block_id = block_id
+        response.target_block_id = physical_block_id
         response.reference_block_id = reference_block_id
         # All poses are raw block CoG — grip server handles TCP offset
         # Pose orientation carries the desired TCP yaw for the BT motion nodes.
@@ -451,11 +585,14 @@ class WallPlanServer(Node):
         response.target_pose = self._make_pose(x, y, z, target_tool_yaw)
         response.reference_pose = self._make_pose(x, y, z, block_target_yaw)
         response.approach_pose = self._make_pose(ax, ay, az, target_tool_yaw)
-        response.message = f"Task {idx + 1}/{len(tasks)}: {block_id}"
+        response.message = (
+            f"Task {idx + 1}/{len(tasks)}: slot {slot_id} -> {physical_block_id}"
+        )
 
         self.get_logger().info(
             f"GetNextAssemblyTask | plan={plan_name} task={task_id} "
-            f"block={block_id} pickup=({px:.2f}, {py:.2f}, {pz:.2f}) [{pose_source}] "
+            f"slot={slot_id} physical={physical_block_id} "
+            f"pickup=({px:.2f}, {py:.2f}, {pz:.2f}) [{pose_source}] "
             f"target=({x:.2f}, {y:.2f}, {z:.2f}) [{target_source}] "
             f"block_yaw={math.degrees(block_target_yaw):.1f}deg "
             f"pickup_tcp_yaw={math.degrees(pickup_tool_yaw):.1f}deg "
