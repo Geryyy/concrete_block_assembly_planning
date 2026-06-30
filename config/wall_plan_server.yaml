@@ -3,11 +3,12 @@
     # World model integration
     world_model_service: "/world_model_node/get_coarse_blocks"
     world_model_timeout_s: 2.0
-    goal_plan_name: "example_wall"
+    world_model_set_goal_service: "/world_model_node/set_block_goal"
+    world_model_clear_goals_service: "/world_model_node/clear_block_goals"
     # Pre-place angled approach
     place_approach_height_m: 0.30
     place_approach_angle_deg: 4.0
     # High A2B endpoint Z values in output_frame. With output_frame=world these
     # map through world->K0 to pickup K0 z=2.0 m and place K0 z=2.6 m.
-    pickup_a2b_approach_z_m: 3.141
+    pickup_a2b_approach_z_m: 4.141
     place_a2b_approach_z_m: 3.741

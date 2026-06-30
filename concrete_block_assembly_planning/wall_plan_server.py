@@ -3,8 +3,8 @@
 
 Serves GetNextAssemblyTask. Reads wall_plans.yaml for target (place)
 positions and the plan sequence. Queries the world model for actual block
-pickup poses at runtime; falls back to YAML positions if the world model is
-unavailable.
+pickup poses at runtime; if the physical block is not available yet, the
+current task waits without advancing plan progress.
 
 All poses are emitted in the configured ``output_frame`` (default ``world``).
 The grip trajectory server handles the block-CoG -> TCP offset downstream.
@@ -23,7 +23,11 @@ from ament_index_python.packages import get_package_share_directory
 
 from concrete_block_assembly_interfaces.srv import GetNextAssemblyTask
 from concrete_block_world_model_interfaces.msg import Block
-from concrete_block_world_model_interfaces.srv import GetCoarseBlocks, SetBlockGoal
+from concrete_block_world_model_interfaces.srv import (
+    ClearBlockGoals,
+    GetCoarseBlocks,
+    SetBlockGoal,
+)
 from geometry_msgs.msg import PoseStamped
 from std_srvs.srv import Trigger
 
@@ -61,12 +65,11 @@ class WallPlanServer(Node):
         # Frame all emitted poses are expressed in. The whole stack standardizes
         # on `world`; conversion to K0_mounting_base happens at the MP boundary.
         self.declare_parameter("output_frame", "world")
-        # Which plan's targets to publish into the world model as block goals
-        # (empty = the only loaded plan). Makes the world model the unified
-        # source of both actual and goal poses.
-        self.declare_parameter("goal_plan_name", "")
         self.declare_parameter(
             "world_model_set_goal_service", "/world_model_node/set_block_goal"
+        )
+        self.declare_parameter(
+            "world_model_clear_goals_service", "/world_model_node/clear_block_goals"
         )
         # Pre-place approach: a point this far above the target, offset laterally
         # along the wall build direction so the descent comes in at this angle
@@ -106,6 +109,7 @@ class WallPlanServer(Node):
         self._wall_plans = {}
         self._progress = {}
         self._block_bindings = {}
+        self._active_goal_plan_name = ""
         self._load_wall_plans()
 
         # Services
@@ -123,14 +127,15 @@ class WallPlanServer(Node):
             self._handle_reload,
             callback_group=self._cb_group,
         )
-        # Publish the plan's block goals into the world model (unified scene).
-        self._goal_plan_name = self.get_parameter("goal_plan_name").value
         self._goal_service_name = self.get_parameter("world_model_set_goal_service").value
+        self._clear_goals_service_name = self.get_parameter(
+            "world_model_clear_goals_service"
+        ).value
         self._goal_client = self.create_client(
             SetBlockGoal, self._goal_service_name, callback_group=self._cb_group
         )
-        self._goal_timer = self.create_timer(
-            1.0, self._try_publish_goals, callback_group=self._cb_group
+        self._clear_goals_client = self.create_client(
+            ClearBlockGoals, self._clear_goals_service_name, callback_group=self._cb_group
         )
 
         self.get_logger().info(
@@ -140,8 +145,7 @@ class WallPlanServer(Node):
     def _load_wall_plans(self):
         """(Re)load wall plans from ``wall_plans_file``. Returns the plan count."""
         self.get_logger().info(f"Loading wall plans from {self._wall_plan_path}")
-        # Re-arm goal publishing so a reload re-pushes goals to the world model.
-        self._goals_published = False
+        self._active_goal_plan_name = ""
         with open(self._wall_plan_path) as f:
             data = yaml.safe_load(f) or {}
 
@@ -183,34 +187,41 @@ class WallPlanServer(Node):
 
     # ---- world-model goal publishing -------------------------------------
 
-    def _resolve_goal_plan_name(self):
-        """Which loaded plan's targets to publish as goals, or '' if ambiguous."""
-        name = self._goal_plan_name
-        if name:
-            if name in self._wall_plans:
-                return name
-            if name.lower() in self._wall_plans:
-                return name.lower()
-            return ""
-        if len(self._wall_plans) == 1:
-            return next(iter(self._wall_plans))
-        return ""
+    def _call_service(self, client, request, service_name):
+        if not client.wait_for_service(timeout_sec=float(self._wm_timeout)):
+            self.get_logger().warn(f"Service '{service_name}' not available")
+            return None
 
-    def _try_publish_goals(self):
-        """Push the plan's resolved targets into the world model as block goals."""
-        if self._goals_published:
-            return
-        plan_name = self._resolve_goal_plan_name()
-        if not plan_name:
-            self._goals_published = True
-            self.get_logger().warn(
-                "goal_plan_name unset and not exactly one plan loaded; "
-                "not publishing block goals to the world model"
-            )
-            return
-        if not self._goal_client.service_is_ready():
-            return  # world model not up yet; retry on the next tick
+        future = client.call_async(request)
+        done = threading.Event()
+        future.add_done_callback(lambda _: done.set())
+        if not done.wait(timeout=float(self._wm_timeout) + 1.0):
+            self.get_logger().warn(f"Service call to '{service_name}' timed out")
+            return None
+        return future.result()
 
+    def _publish_goals_for_plan(self, plan_name):
+        """Replace world-model goals with the targets for ``plan_name``."""
+        if self._active_goal_plan_name == plan_name:
+            return True
+
+        clear_req = ClearBlockGoals.Request()
+        clear_res = self._call_service(
+            self._clear_goals_client,
+            clear_req,
+            self._clear_goals_service_name,
+        )
+        if clear_res is None or not clear_res.success:
+            reason = clear_res.message if clear_res is not None else "no response"
+            self.get_logger().warn(f"Could not clear existing block goals: {reason}")
+            return False
+
+        self.get_logger().info(
+            f"Cleared {clear_res.cleared_count} world-model goal(s) "
+            f"before activating plan '{plan_name}'"
+        )
+
+        published = 0
         tasks = self._wall_plans.get(plan_name, [])
         for task in tasks:
             slot_id = task["block_id"]
@@ -220,16 +231,25 @@ class WallPlanServer(Node):
             x, y, z = task["position"]
             req.goal_pose = self._make_pose(x, y, z, task["yaw"]).pose
             req.frame_id = self._output_frame
-            self._goal_client.call_async(req)
+            res = self._call_service(self._goal_client, req, self._goal_service_name)
+            if res is None or not res.success:
+                reason = res.message if res is not None else "no response"
+                self.get_logger().warn(
+                    f"Could not publish goal for plan={plan_name} slot={slot_id} "
+                    f"physical={physical_id}: {reason}"
+                )
+                return False
+            published += 1
             self.get_logger().info(
                 f"Publishing wall goal | plan={plan_name} slot={slot_id} "
                 f"physical={physical_id} target=({x:.2f}, {y:.2f}, {z:.2f})"
             )
-        self._goals_published = True
+
+        self._active_goal_plan_name = plan_name
         self.get_logger().info(
-            f"Published {len(tasks)} block goal(s) for plan '{plan_name}' "
-            f"to {self._goal_service_name}"
+            f"Activated wall plan '{plan_name}' with {published} world-model goal(s)"
         )
+        return True
 
     def _normalize_block_bindings(self, plan_name, raw_bindings, tasks):
         """Return {wall_slot_id: physical_block_id} from YAML bindings.
@@ -375,8 +395,7 @@ class WallPlanServer(Node):
         """Return the current world-model blocks list, or None on failure."""
         if not self._wm_client.service_is_ready():
             self.get_logger().warn(
-                f"World model service '{self._wm_service_name}' not available, "
-                "using YAML fallback"
+                f"World model service '{self._wm_service_name}' not available"
             )
             return None
 
@@ -388,13 +407,13 @@ class WallPlanServer(Node):
         future.add_done_callback(lambda _: done.set())
 
         if not done.wait(timeout=float(self._wm_timeout) + 1.0) or future.result() is None:
-            self.get_logger().warn("World model query timed out, using YAML fallback")
+            self.get_logger().warn("World model query timed out")
             return None
 
         result = future.result()
         if not result.success:
             self.get_logger().warn(
-                f"World model query failed: {result.message}, using YAML fallback"
+                f"World model query failed: {result.message}"
             )
             return None
 
@@ -466,6 +485,12 @@ class WallPlanServer(Node):
             response.has_task = False
             response.message = f"Unknown wall plan: '{plan_name}'"
             self.get_logger().error(response.message)
+            return response
+
+        if not self._publish_goals_for_plan(plan_name):
+            response.success = False
+            response.has_task = True
+            response.message = f"Waiting to publish goals for wall plan '{plan_name}'"
             return response
 
         tasks = self._wall_plans[plan_name]
