@@ -201,14 +201,36 @@ class WallPlanServer(Node):
         return response
 
     def _handle_plan_control(self, request, response):
-        """List available plans, or activate/clear a plan's goals in the world model."""
+        """List/reload plans, or activate/clear a plan's goals in the world model."""
         command = (request.command or "").strip().lower()
         response.active_plan = self._active_goal_plan_name
+        response.wall_plans_file = self._wall_plan_path
 
         if command == "list":
             response.plan_names = sorted(self._wall_plans.keys())
             response.success = True
             response.message = f"{len(response.plan_names)} plan(s) available"
+            return response
+
+        if command == "reload":
+            path = (request.wall_plans_file or "").strip()
+            if path:
+                self._wall_plan_path = path
+            try:
+                count = self._load_wall_plans()
+            except (OSError, yaml.YAMLError) as ex:
+                response.success = False
+                response.wall_plans_file = self._wall_plan_path
+                response.active_plan = self._active_goal_plan_name
+                response.message = f"Reload failed: {ex}"
+                self.get_logger().error(response.message)
+                return response
+            response.success = True
+            response.plan_names = sorted(self._wall_plans.keys())
+            response.wall_plans_file = self._wall_plan_path
+            response.active_plan = self._active_goal_plan_name
+            response.message = f"Loaded {count} plan(s) from {self._wall_plan_path}"
+            self.get_logger().info(response.message)
             return response
 
         if command == "clear":
