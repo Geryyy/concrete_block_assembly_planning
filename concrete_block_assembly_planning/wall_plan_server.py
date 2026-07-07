@@ -13,15 +13,10 @@ The grip trajectory server handles the block-CoG -> TCP offset downstream.
 import math
 import threading
 
-import yaml
-
 import rclpy
-from rclpy.node import Node
-from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+import yaml
 from ament_index_python.packages import get_package_share_directory
-
-from concrete_block_assembly_interfaces.srv import GetNextAssemblyTask
+from concrete_block_assembly_interfaces.srv import GetNextAssemblyTask, PlanControl
 from concrete_block_world_model_interfaces.msg import Block
 from concrete_block_world_model_interfaces.srv import (
     ClearBlockGoals,
@@ -29,6 +24,9 @@ from concrete_block_world_model_interfaces.srv import (
     SetBlockGoal,
 )
 from geometry_msgs.msg import PoseStamped
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
 from std_srvs.srv import Trigger
 
 
@@ -89,7 +87,9 @@ class WallPlanServer(Node):
             self.get_parameter("place_approach_angle_deg").value
         )
         self._place_a2b_approach_z = self.get_parameter("place_a2b_approach_z_m").value
-        self._pickup_a2b_approach_z = self.get_parameter("pickup_a2b_approach_z_m").value
+        self._pickup_a2b_approach_z = self.get_parameter(
+            "pickup_a2b_approach_z_m"
+        ).value
         self._cb_group = ReentrantCallbackGroup()
 
         # World model client (for live block poses)
@@ -127,7 +127,16 @@ class WallPlanServer(Node):
             self._handle_reload,
             callback_group=self._cb_group,
         )
-        self._goal_service_name = self.get_parameter("world_model_set_goal_service").value
+        # List/activate/clear plans in the world model (e.g. from an RViz panel).
+        self.create_service(
+            PlanControl,
+            "~/plan_control",
+            self._handle_plan_control,
+            callback_group=self._cb_group,
+        )
+        self._goal_service_name = self.get_parameter(
+            "world_model_set_goal_service"
+        ).value
         self._clear_goals_service_name = self.get_parameter(
             "world_model_clear_goals_service"
         ).value
@@ -135,7 +144,9 @@ class WallPlanServer(Node):
             SetBlockGoal, self._goal_service_name, callback_group=self._cb_group
         )
         self._clear_goals_client = self.create_client(
-            ClearBlockGoals, self._clear_goals_service_name, callback_group=self._cb_group
+            ClearBlockGoals,
+            self._clear_goals_service_name,
+            callback_group=self._cb_group,
         )
 
         self.get_logger().info(
@@ -160,7 +171,9 @@ class WallPlanServer(Node):
             raw_bindings = plan_data.get("block_bindings")
             if raw_bindings is None and isinstance(global_bindings, dict):
                 raw_bindings = global_bindings.get(plan_name, {})
-            bindings = self._normalize_block_bindings(plan_name, raw_bindings or {}, tasks)
+            bindings = self._normalize_block_bindings(
+                plan_name, raw_bindings or {}, tasks
+            )
             self._block_bindings[plan_name] = bindings
             self.get_logger().info(
                 f"Loaded wall plan '{plan_name}' with {len(tasks)} tasks"
@@ -178,12 +191,76 @@ class WallPlanServer(Node):
         try:
             count = self._load_wall_plans()
             response.success = True
-            response.message = f"Reloaded {count} wall plan(s) from {self._wall_plan_path}"
+            response.message = (
+                f"Reloaded {count} wall plan(s) from {self._wall_plan_path}"
+            )
         except (OSError, yaml.YAMLError) as ex:
             response.success = False
             response.message = f"Reload failed: {ex}"
         self.get_logger().info(response.message)
         return response
+
+    def _handle_plan_control(self, request, response):
+        """List available plans, or activate/clear a plan's goals in the world model."""
+        command = (request.command or "").strip().lower()
+        response.active_plan = self._active_goal_plan_name
+
+        if command == "list":
+            response.plan_names = sorted(self._wall_plans.keys())
+            response.success = True
+            response.message = f"{len(response.plan_names)} plan(s) available"
+            return response
+
+        if command == "clear":
+            ok, cleared = self._clear_active_goals()
+            response.success = ok
+            response.num_goals = cleared
+            response.active_plan = self._active_goal_plan_name
+            response.message = (
+                f"Cleared {cleared} goal(s)" if ok else "Failed to clear goals"
+            )
+            return response
+
+        if command == "activate":
+            plan_name = (request.wall_plan_name or "").strip().lower()
+            if plan_name not in self._wall_plans:
+                response.success = False
+                response.message = f"Unknown wall plan: '{plan_name}'"
+                self.get_logger().error(response.message)
+                return response
+            # Force a fresh publish even if this plan is already active.
+            self._active_goal_plan_name = ""
+            self._progress[plan_name] = 0
+            ok = self._publish_goals_for_plan(plan_name)
+            response.success = ok
+            response.active_plan = self._active_goal_plan_name
+            response.num_goals = len(self._wall_plans.get(plan_name, []))
+            response.message = (
+                f"Activated plan '{plan_name}' ({response.num_goals} goal(s))"
+                if ok
+                else f"Failed to activate plan '{plan_name}'"
+            )
+            return response
+
+        response.success = False
+        response.message = (
+            f"Unknown command: '{request.command}' (use list|activate|clear)"
+        )
+        return response
+
+    def _clear_active_goals(self):
+        """Clear all assembly goals in the world model and reset the active-plan latch."""
+        clear_req = ClearBlockGoals.Request()  # empty block_ids -> clear all
+        clear_res = self._call_service(
+            self._clear_goals_client, clear_req, self._clear_goals_service_name
+        )
+        self._active_goal_plan_name = ""
+        if clear_res is None or not clear_res.success:
+            reason = clear_res.message if clear_res is not None else "no response"
+            self.get_logger().warn(f"Could not clear block goals: {reason}")
+            return False, 0
+        self.get_logger().info(f"Cleared {clear_res.cleared_count} world-model goal(s)")
+        return True, int(clear_res.cleared_count)
 
     # ---- world-model goal publishing -------------------------------------
 
@@ -378,17 +455,19 @@ class WallPlanServer(Node):
                 if norm > 1e-6:
                     build_dir = [dx / norm, dy / norm]
             prev_pos = pos
-            tasks.append({
-                "task_id": task_id,
-                "block_id": block_id,
-                "position": pos,
-                "yaw": yaw_rad,
-                "gripper_yaw_offset": gripper_yaw_offset,
-                "target_mode": target_mode,
-                "reference_block_id": reference_block_id,
-                "offset": offset,
-                "build_dir": build_dir,
-            })
+            tasks.append(
+                {
+                    "task_id": task_id,
+                    "block_id": block_id,
+                    "position": pos,
+                    "yaw": yaw_rad,
+                    "gripper_yaw_offset": gripper_yaw_offset,
+                    "target_mode": target_mode,
+                    "reference_block_id": reference_block_id,
+                    "offset": offset,
+                    "build_dir": build_dir,
+                }
+            )
         return tasks
 
     def _get_world_model_blocks(self):
@@ -406,15 +485,16 @@ class WallPlanServer(Node):
         done = threading.Event()
         future.add_done_callback(lambda _: done.set())
 
-        if not done.wait(timeout=float(self._wm_timeout) + 1.0) or future.result() is None:
+        if (
+            not done.wait(timeout=float(self._wm_timeout) + 1.0)
+            or future.result() is None
+        ):
             self.get_logger().warn("World model query timed out")
             return None
 
         result = future.result()
         if not result.success:
-            self.get_logger().warn(
-                f"World model query failed: {result.message}"
-            )
+            self.get_logger().warn(f"World model query failed: {result.message}")
             return None
 
         return result.blocks.blocks
@@ -513,7 +593,8 @@ class WallPlanServer(Node):
         reference_slot_id = task.get("reference_block_id", "")
         reference_block_id = (
             self._physical_block_id(plan_name, reference_slot_id)
-            if reference_slot_id else ""
+            if reference_slot_id
+            else ""
         )
 
         self.get_logger().info(
@@ -606,7 +687,8 @@ class WallPlanServer(Node):
         # Pose orientation carries the desired TCP yaw for the BT motion nodes.
         response.pickup_pose = self._make_pose(px, py, pz, pickup_tool_yaw)
         response.pickup_approach_pose = self._make_pose(
-            px, py, self._pickup_a2b_approach_z, pickup_tool_yaw)
+            px, py, self._pickup_a2b_approach_z, pickup_tool_yaw
+        )
         response.target_pose = self._make_pose(x, y, z, target_tool_yaw)
         response.reference_pose = self._make_pose(x, y, z, block_target_yaw)
         response.approach_pose = self._make_pose(ax, ay, az, target_tool_yaw)
