@@ -18,6 +18,3 @@ wall:
   courses:
     - {count: 3, offset: 0.0}    # bottom course
     - {count: 2, offset: 0.3}   # half-block running-bond offset
-
-
-

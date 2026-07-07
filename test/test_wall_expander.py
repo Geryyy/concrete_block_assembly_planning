@@ -3,6 +3,7 @@
 import math
 
 from concrete_block_assembly_planning.wall_expander import (
+    build_block_bindings,
     build_support_graph,
     compute_layout,
     expand,
@@ -104,3 +105,42 @@ def test_expand_structure():
     assert "test_wall" in plan["wall_plans"]
     assert len(plan["wall_plans"]["test_wall"]["sequence"]) == 5
     assert plan["defaults"]["block_size"] == [0.9, 0.6, 0.6]
+
+
+def test_expand_emits_default_sequential_bindings():
+    # Every slot is bound to a physical block_N in build order so the plan
+    # server can resolve slots to seeded / perceived world-model blocks.
+    plan = expand(SPEC)
+    assert plan["wall_plans"]["test_wall"]["block_bindings"] == {
+        "c0_b0": "block_0",
+        "c0_b1": "block_1",
+        "c0_b2": "block_2",
+        "c1_b0": "block_3",
+        "c1_b1": "block_4",
+    }
+
+
+def test_block_id_prefix_and_start_override():
+    bindings = build_block_bindings(
+        compute_layout(SPEC)[0],
+        {"block_id_prefix": "brick", "block_id_start": 1},
+    )
+    assert bindings["c0_b0"] == "brick1"
+    assert bindings["c1_b1"] == "brick5"
+
+
+def test_physical_block_ids_list_binds_in_order():
+    ids = ["block_2", "block_0", "block_1", "block_3", "block_4"]
+    bindings = build_block_bindings(
+        compute_layout(SPEC)[0], {"physical_block_ids": ids}
+    )
+    assert bindings["c0_b0"] == "block_2"
+    assert bindings["c0_b1"] == "block_0"
+
+
+def test_explicit_block_bindings_pass_through():
+    explicit = {"c0_b0": "block_9", "c0_b1": "block_8"}
+    bindings = build_block_bindings(
+        compute_layout(SPEC)[0], {"block_bindings": explicit}
+    )
+    assert bindings == explicit

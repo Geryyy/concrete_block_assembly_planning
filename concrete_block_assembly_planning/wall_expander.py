@@ -24,17 +24,24 @@ Compact spec schema (YAML)::
       courses:
         - {count: 3, offset: 0.0}
         - {count: 2, offset: 0.45}  # half-block running-bond offset
+      # Optional: how wall-plan slot ids (c0_b0, ...) map to the physical
+      # world-model / perception block ids the plan server sends goals for.
+      # Precedence: block_bindings > physical_block_ids > prefix+start.
+      block_id_prefix: block_       # default; slots -> block_0, block_1, ...
+      block_id_start: 0
+      # physical_block_ids: [block_2, block_0, block_1, block_3, block_4]
+      # block_bindings: {c0_b0: block_0, c0_b1: block_1}
 """
 
 from __future__ import annotations
 
 import argparse
 import math
-from typing import Optional
 
 import yaml
 
 DEFAULT_BLOCK_SIZE = [0.9, 0.6, 0.6]
+DEFAULT_BLOCK_ID_PREFIX = "block_"
 
 
 def _wall_section(spec: dict) -> dict:
@@ -81,17 +88,19 @@ def compute_layout(spec: dict):
         offset = float(course.get("offset", 0.0))
         for j in range(count):
             along = offset + j * pitch
-            blocks.append({
-                "id": f"c{i}_b{j}",
-                "course": i,
-                "index": j,
-                "along": along,
-                "x": ox + along * dir_x,
-                "y": oy + along * dir_y,
-                "z": oz + i * vpitch,
-                "yaw_deg": yaw_deg,
-                "supports": [],
-            })
+            blocks.append(
+                {
+                    "id": f"c{i}_b{j}",
+                    "course": i,
+                    "index": j,
+                    "along": along,
+                    "x": ox + along * dir_x,
+                    "y": oy + along * dir_y,
+                    "z": oz + i * vpitch,
+                    "yaw_deg": yaw_deg,
+                    "supports": [],
+                }
+            )
 
     _assign_supports(blocks, block_len)
 
@@ -173,16 +182,47 @@ def to_wall_plan(blocks, meta: dict) -> list:
     return seq
 
 
-def expand(spec: dict, name: Optional[str] = None) -> dict:
+def build_block_bindings(blocks, wall: dict) -> dict:
+    """Map each wall-plan slot id (``c{course}_b{index}``) to a physical block id.
+
+    The physical ids are the world-model / perception block ids the wall-plan
+    server sends goals for (see ``wall_plan_server._physical_block_id``). Without
+    these the plan server falls back to the slot id itself, which no seeded /
+    perceived block is named after, so every task parks waiting for a block that
+    never appears. Precedence:
+
+    1. ``wall.block_bindings`` — explicit ``{slot: physical}`` mapping, used as-is.
+    2. ``wall.physical_block_ids`` — a list zipped onto the blocks in build order.
+    3. ``block_id_prefix`` + ``block_id_start`` — sequential default, i.e.
+       ``c0_b0 -> block_0, c0_b1 -> block_1, ...``.
+    """
+    explicit = wall.get("block_bindings")
+    if isinstance(explicit, dict) and explicit:
+        return {str(k): str(v) for k, v in explicit.items()}
+
+    physical_ids = wall.get("physical_block_ids")
+    if physical_ids:
+        return {b["id"]: str(pid) for b, pid in zip(blocks, physical_ids)}
+
+    prefix = wall.get("block_id_prefix", DEFAULT_BLOCK_ID_PREFIX)
+    start = int(wall.get("block_id_start", 0))
+    return {b["id"]: f"{prefix}{start + i}" for i, b in enumerate(blocks)}
+
+
+def expand(spec: dict, name: str | None = None) -> dict:
     """Expand a compact spec into a wall_plans.yaml-compatible structure."""
     blocks, meta = compute_layout(spec)
     topo_order(blocks)  # validate support ordering
-    plan_name = name or _wall_section(spec).get("name", "wall")
+    wall = _wall_section(spec)
+    plan_name = name or wall.get("name", "wall")
+    plan_entry = {}
+    bindings = build_block_bindings(blocks, wall)
+    if bindings:
+        plan_entry["block_bindings"] = bindings
+    plan_entry["sequence"] = to_wall_plan(blocks, meta)
     return {
         "defaults": {"block_size": meta["block_size"]},
-        "wall_plans": {
-            plan_name: {"sequence": to_wall_plan(blocks, meta)},
-        },
+        "wall_plans": {plan_name: plan_entry},
     }
 
 
@@ -194,8 +234,12 @@ def load_spec(path: str) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Expand a compact wall spec.")
     parser.add_argument("spec", help="Path to the compact wall spec YAML")
-    parser.add_argument("-o", "--output", help="Write expanded plan here (default: stdout)")
-    parser.add_argument("-n", "--name", help="Wall plan name (default: spec 'name' or 'wall')")
+    parser.add_argument(
+        "-o", "--output", help="Write expanded plan here (default: stdout)"
+    )
+    parser.add_argument(
+        "-n", "--name", help="Wall plan name (default: spec 'name' or 'wall')"
+    )
     args = parser.parse_args()
 
     spec = load_spec(args.spec)
