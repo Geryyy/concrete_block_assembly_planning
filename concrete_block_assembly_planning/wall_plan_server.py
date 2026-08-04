@@ -576,7 +576,23 @@ class WallPlanServer(Node):
         return pose
 
     def _handle_get_next_task(self, request, response):
-        plan_name = request.wall_plan_name.lower()
+        # An explicit plan name is retained for callers that need it (for
+        # example, batch execution).  The operator-guided workflow deliberately
+        # sends an empty name: it must consume exactly the plan the operator
+        # activated in the existing Plan Control RViz panel, not a hidden
+        # default baked into a behaviour tree.
+        requested_plan_name = (request.wall_plan_name or "").strip().lower()
+        active_plan_name = (self._active_goal_plan_name or "").strip().lower()
+        plan_name = requested_plan_name or active_plan_name
+
+        if not plan_name:
+            response.success = False
+            response.has_task = False
+            response.message = (
+                "No active wall plan. In Plan Control, select a plan and press Load."
+            )
+            self.get_logger().warn(response.message)
+            return response
 
         if request.reset_plan:
             self._progress[plan_name] = 0
