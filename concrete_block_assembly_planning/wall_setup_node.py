@@ -16,10 +16,13 @@ the motion-planning boundary, not here).
 """
 
 import math
+import threading
 
 import yaml
 
 import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy
 
@@ -34,6 +37,7 @@ from visualization_msgs.msg import (
 from interactive_markers import InteractiveMarkerServer
 
 from concrete_block_world_model_interfaces.msg import Block, BlockArray
+from concrete_block_world_model_interfaces.srv import DiscoverBlocks
 from concrete_block_assembly_interfaces.srv import ConfirmWallOrigin
 
 from concrete_block_assembly_planning import wall_expander, wall_validator
@@ -66,6 +70,12 @@ class WallSetupNode(Node):
         self.declare_parameter("reach_max", 12.0)
         self.declare_parameter("reach_z_min", -2.0)
         self.declare_parameter("reach_z_max", 8.0)
+        # Ground-height lookup, used to set the origin's z from the detector's
+        # local ground-plane fit instead of the spec file's flat default. Best
+        # effort: on failure/timeout/NaN, origin.z keeps its prior value
+        # (spec-file default or an explicitly requested z) unchanged.
+        self.declare_parameter("ground_height_service", "/concrete_block_detector/discover_blocks")
+        self.declare_parameter("ground_height_query_timeout_s", 5.0)
 
         self._frame = self.get_parameter("world_frame").value
         self._plan_name = self.get_parameter("wall_plan_name").value
@@ -102,8 +112,19 @@ class WallSetupNode(Node):
         self._marker_pub = self.create_publisher(MarkerArray, "~/goal_wall_markers", latched)
         self._blocks_pub = self.create_publisher(BlockArray, "~/goal_wall_blocks", latched)
 
+        self._cb_group = ReentrantCallbackGroup()
+        self._ground_height_timeout_s = float(
+            self.get_parameter("ground_height_query_timeout_s").value
+        )
+        self._ground_height_client = self.create_client(
+            DiscoverBlocks,
+            self.get_parameter("ground_height_service").value,
+            callback_group=self._cb_group,
+        )
+
         self.create_service(
-            ConfirmWallOrigin, "~/confirm_wall_origin", self._handle_confirm
+            ConfirmWallOrigin, "~/confirm_wall_origin", self._handle_confirm,
+            callback_group=self._cb_group,
         )
 
         self._im_server = InteractiveMarkerServer(self, "wall_origin")
@@ -240,6 +261,35 @@ class WallSetupNode(Node):
             arr.blocks.append(blk)
         self._blocks_pub.publish(arr)
 
+    # ---- ground-height lookup -----------------------------------------------
+
+    def _query_ground_height_m(self):
+        """Best-effort local ground height (world z) from the detector's
+        already-computed ground-plane fit, or None on any failure/NaN."""
+        if not self._ground_height_client.service_is_ready():
+            self.get_logger().warn(
+                f"Ground-height service "
+                f"'{self.get_parameter('ground_height_service').value}' not available; "
+                "keeping current origin z"
+            )
+            return None
+
+        req = DiscoverBlocks.Request()
+        req.timeout_s = self._ground_height_timeout_s
+        future = self._ground_height_client.call_async(req)
+        done = threading.Event()
+        future.add_done_callback(lambda _: done.set())
+        if not done.wait(timeout=self._ground_height_timeout_s + 1.0):
+            self.get_logger().warn("Ground-height query timed out; keeping current origin z")
+            return None
+
+        result = future.result()
+        if result is None or not result.success or not math.isfinite(result.ground_height_m):
+            reason = result.message if result is not None else "no response"
+            self.get_logger().warn(f"Ground-height query failed ({reason}); keeping current origin z")
+            return None
+        return float(result.ground_height_m)
+
     # ---- confirm service ---------------------------------------------------
 
     def _handle_confirm(self, request, response):
@@ -249,6 +299,13 @@ class WallSetupNode(Node):
                 request.origin.orientation.w not in (0.0, 1.0) or
                 request.origin.orientation.z != 0.0):
             self._set_origin_from_pose(request.origin)
+
+        ground_z = self._query_ground_height_m()
+        if ground_z is not None:
+            wall = wall_expander._wall_section(self._spec)
+            wall.setdefault("origin", {})
+            wall["origin"]["z"] = ground_z
+            self.get_logger().info(f"Origin z set from local ground-plane fit: {ground_z:.3f} m")
 
         plan_name = request.wall_plan_name or self._plan_name
         blocks, meta, all_valid, _ = self._refresh()
@@ -297,11 +354,14 @@ class WallSetupNode(Node):
 def main():
     rclpy.init()
     node = WallSetupNode()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
