@@ -20,6 +20,7 @@ from concrete_block_assembly_interfaces.srv import GetNextAssemblyTask, PlanCont
 from concrete_block_world_model_interfaces.msg import Block
 from concrete_block_world_model_interfaces.srv import (
     ClearBlockGoals,
+    DiscoverBlocks,
     GetCoarseBlocks,
     SetBlockGoal,
 )
@@ -28,6 +29,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_srvs.srv import Trigger
+
+from concrete_block_assembly_planning import terrain
 
 
 def yaw_to_quaternion(yaw_rad: float):
@@ -78,6 +81,25 @@ class WallPlanServer(Node):
         # handles the low final descent from these high clearances.
         self.declare_parameter("pickup_a2b_approach_z_m", 3.141)
         self.declare_parameter("place_a2b_approach_z_m", 3.741)
+        # Terrain height correction. On 'activate', query the detector's local
+        # ground model and re-seat every block on the measured ground under its
+        # own (x, y), so a plan authored on flat ground still lands on a slope.
+        # Best effort throughout: any failure leaves the plan's own z untouched
+        # and is logged, never fatal -- an unreachable detector must not stop an
+        # operator from loading a plan.
+        self.declare_parameter("terrain_correction_enabled", True)
+        self.declare_parameter(
+            "terrain_model_service", "/concrete_block_detector/discover_blocks"
+        )
+        self.declare_parameter("terrain_query_timeout_s", 5.0)
+        # Per-block correction bound. Beyond this a "measurement" is far more
+        # likely a bad ground fit (a block or the gripper mistaken for ground)
+        # than real terrain, so the block keeps its planned height.
+        self.declare_parameter("terrain_max_shift_m", 0.5)
+        # Ground level the plans were authored against. Blank means infer it
+        # per plan from the bottom of its lowest course.
+        self.declare_parameter("terrain_plan_ground_z", float("nan"))
+        self.declare_parameter("block_height_m", 0.6)
 
         self._wm_service_name = self.get_parameter("world_model_service").value
         self._wm_timeout = self.get_parameter("world_model_timeout_s").value
@@ -110,6 +132,9 @@ class WallPlanServer(Node):
         self._progress = {}
         self._block_bindings = {}
         self._active_goal_plan_name = ""
+        # Outcome of the last terrain correction, echoed back to the RViz panel
+        # so the operator can tell a corrected plan from an uncorrected one.
+        self._terrain_note = ""
         self._load_wall_plans()
 
         # Services
@@ -149,8 +174,27 @@ class WallPlanServer(Node):
             callback_group=self._cb_group,
         )
 
+        self._terrain_enabled = bool(
+            self.get_parameter("terrain_correction_enabled").value
+        )
+        self._terrain_service_name = self.get_parameter("terrain_model_service").value
+        self._terrain_timeout = float(
+            self.get_parameter("terrain_query_timeout_s").value
+        )
+        self._terrain_max_shift = float(self.get_parameter("terrain_max_shift_m").value)
+        self._terrain_plan_ground_z = float(
+            self.get_parameter("terrain_plan_ground_z").value
+        )
+        self._block_height = float(self.get_parameter("block_height_m").value)
+        self._terrain_client = self.create_client(
+            DiscoverBlocks,
+            self._terrain_service_name,
+            callback_group=self._cb_group,
+        )
+
         self.get_logger().info(
-            f"Wall plan server ready (output_frame={self._output_frame})"
+            f"Wall plan server ready (output_frame={self._output_frame}, "
+            f"terrain_correction={'on' if self._terrain_enabled else 'off'})"
         )
 
     def _load_wall_plans(self):
@@ -257,11 +301,14 @@ class WallPlanServer(Node):
             response.success = ok
             response.active_plan = self._active_goal_plan_name
             response.num_goals = len(self._wall_plans.get(plan_name, []))
-            response.message = (
-                f"Activated plan '{plan_name}' ({response.num_goals} goal(s))"
-                if ok
-                else f"Failed to activate plan '{plan_name}'"
-            )
+            if ok:
+                response.message = (
+                    f"Activated plan '{plan_name}' ({response.num_goals} goal(s))"
+                )
+                if self._terrain_note:
+                    response.message += f"; terrain: {self._terrain_note}"
+            else:
+                response.message = f"Failed to activate plan '{plan_name}'"
             return response
 
         response.success = False
@@ -299,6 +346,77 @@ class WallPlanServer(Node):
             return None
         return future.result()
 
+    # ---- terrain height correction ---------------------------------------
+
+    def _query_terrain_model(self):
+        """Best-effort local ground model from the detector, or None."""
+        if not self._terrain_client.service_is_ready():
+            self.get_logger().warn(
+                f"Terrain service '{self._terrain_service_name}' not available; "
+                "using planned block heights"
+            )
+            return None
+
+        req = DiscoverBlocks.Request()
+        req.timeout_s = self._terrain_timeout
+        future = self._terrain_client.call_async(req)
+        done = threading.Event()
+        future.add_done_callback(lambda _: done.set())
+        if not done.wait(timeout=self._terrain_timeout + 1.0):
+            self.get_logger().warn(
+                "Terrain query timed out; using planned block heights"
+            )
+            return None
+
+        result = future.result()
+        if result is None or not result.success:
+            reason = result.message if result is not None else "no response"
+            self.get_logger().warn(
+                f"Terrain query failed ({reason}); using planned block heights"
+            )
+            return None
+
+        model = terrain.TerrainModel(result.ground_model)
+        if not model.valid:
+            self.get_logger().warn(
+                "Detector returned no usable ground model; using planned block heights"
+            )
+            return None
+        return model
+
+    def _terrain_corrected_positions(self, plan_name, tasks):
+        """Per-task ``[x, y, z]`` re-seated on measured terrain where possible.
+
+        Returns ``(positions, note)``. ``positions`` is always usable: it falls
+        back to the plan's own heights whenever the correction cannot be made.
+        """
+        if not self._terrain_enabled or not tasks:
+            return [list(task["position"]) for task in tasks], ""
+
+        model = self._query_terrain_model()
+        if model is None:
+            return [list(task["position"]) for task in tasks], "terrain unavailable"
+
+        plan_ground_z = self._terrain_plan_ground_z
+        if not math.isfinite(plan_ground_z):
+            plan_ground_z = terrain.infer_plan_ground_z(tasks, self._block_height)
+        if plan_ground_z is None:
+            return [
+                list(task["position"]) for task in tasks
+            ], "no plan ground reference"
+
+        positions, summary = terrain.correct_plan_heights(
+            tasks, model, plan_ground_z, self._terrain_max_shift
+        )
+        self.get_logger().info(
+            f"Terrain correction | plan={plan_name} source={model.source} "
+            f"cells={model.num_cells} cell_size={model.cell_size:.2f}m "
+            f"plan_ground_z={plan_ground_z:.3f} -> {summary}"
+        )
+        return positions, summary
+
+    # ---- world-model goal publishing --------------------------------------
+
     def _publish_goals_for_plan(self, plan_name):
         """Replace world-model goals with the targets for ``plan_name``."""
         if self._active_goal_plan_name == plan_name:
@@ -322,12 +440,22 @@ class WallPlanServer(Node):
 
         published = 0
         tasks = self._wall_plans.get(plan_name, [])
-        for task in tasks:
+        # Correct once per activation, before any goal is published: the world
+        # model goal is what both the RViz markers and the executed place pose
+        # read back, so applying it here is the single point that keeps the
+        # picture and the motion agreeing.
+        positions, self._terrain_note = self._terrain_corrected_positions(
+            plan_name, tasks
+        )
+        for task, position in zip(tasks, positions):
             slot_id = task["block_id"]
             physical_id = self._physical_block_id(plan_name, slot_id)
+            # Remember the corrected target so the YAML fallback path in
+            # _handle_get_next_task cannot hand back the uncorrected height.
+            task["goal_position"] = position
             req = SetBlockGoal.Request()
             req.block_id = physical_id
-            x, y, z = task["position"]
+            x, y, z = position
             req.goal_pose = self._make_pose(x, y, z, task["yaw"]).pose
             req.frame_id = self._output_frame
             res = self._call_service(self._goal_client, req, self._goal_service_name)
@@ -625,7 +753,7 @@ class WallPlanServer(Node):
         task_id = task["task_id"]
         slot_id = task["block_id"]
         physical_block_id = self._physical_block_id(plan_name, slot_id)
-        x, y, z = task["position"]
+        x, y, z = task.get("goal_position") or task["position"]
         block_target_yaw = task["yaw"]
         gripper_yaw_offset = task.get("gripper_yaw_offset", 0.0)
         reference_slot_id = task.get("reference_block_id", "")
