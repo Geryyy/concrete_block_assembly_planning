@@ -9,7 +9,7 @@ wall_plans:
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
   stack_block_1_on_block_2:
-    block_bindings: {c0_b0: block_0, c0_b1: block_2}
+    block_bindings: {c0_b0: block_1, c0_b1: block_2}
     sequence:
     - id: c0_b0
       absolute_position: [-14.0, 0.0, 0.3]
