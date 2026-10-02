@@ -5,9 +5,10 @@
     world_model_timeout_s: 2.0
     world_model_set_goal_service: "/world_model_node/set_block_goal"
     world_model_clear_goals_service: "/world_model_node/clear_block_goals"
-    # Pre-place angled approach
+    # Pre-place angled approach: the BT's place waypoint is 0.30 m up and 0.30 tan(18 deg)
+    # = 0.10 m to the open side; 4 deg (2 cm) left no clearance to a neighbour 2 cm away.
     place_approach_height_m: 0.30
-    place_approach_angle_deg: 4.0
+    place_approach_angle_deg: 18.0
     # High A2B endpoint Z values in output_frame. With output_frame=world these
     # map through world->K0 to pickup K0 z=2.0 m and place K0 z=2.6 m.
     pickup_a2b_approach_z_m: 4.141
