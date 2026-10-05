@@ -10,6 +10,8 @@
     place_approach_height_m: 0.30
     place_approach_angle_deg: 18.0
     # High A2B endpoint Z values in output_frame. With output_frame=world these
-    # map through world->K0 to pickup K0 z=2.0 m and place K0 z=2.6 m.
+    # map through world->K0 to pickup K0 z=3.0 m and place K0 z=2.7 m. Place was 2.6: the
+    # carried block then cleared a second-course neighbour by 0.149 m against the planner's 0.150,
+    # once terrain had raised the course (sim terrain run 127).
     pickup_a2b_approach_z_m: 4.141
-    place_a2b_approach_z_m: 3.741
+    place_a2b_approach_z_m: 3.841
