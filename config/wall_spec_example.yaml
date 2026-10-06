@@ -15,6 +15,7 @@ wall:
     z: 0.3
     yaw_deg: 0.0
   origin_frame: world
+  survey_position: [-14.5, 2.0]   # look-out for undiscovered blocks, off the lidar's line
   courses:
     - {count: 3, offset: 0.0}    # bottom course
     - {count: 2, offset: 0.3}   # half-block running-bond offset

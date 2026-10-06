@@ -50,6 +50,34 @@ def normalize_angle(angle_rad: float) -> float:
     return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
 
 
+def free_block_for_slot(blocks, bound, other_bound, target_xy):
+    """The id to pick for a slot: ``bound`` if it is a free precisely known block, else the
+    free precise block nearest the slot's target that no other slot is bound to, else ``bound``.
+
+    Discovery names blocks in its own order, and the lidar on the slewing column finds a block
+    hidden behind another only once that one is picked, so a fixed binding can point at a
+    goal-only placeholder or at nothing.
+    """
+    # Precise only: a block half hidden behind a lifted one came back 15 cm off as a one-face
+    # (coarse) fit, and the jaws closed on nothing. A coarse block waits for a better view.
+    free = [
+        b
+        for b in blocks
+        if b.pose_status == Block.POSE_PRECISE and b.task_status == Block.TASK_FREE
+    ]
+    if any(b.id == bound for b in free):
+        return bound
+    candidates = [b for b in free if b.id not in other_bound]
+    if not candidates:
+        return bound
+    return min(
+        candidates,
+        key=lambda b: math.hypot(
+            b.pose.position.x - target_xy[0], b.pose.position.y - target_xy[1]
+        ),
+    ).id
+
+
 class WallPlanServer(Node):
     def __init__(self):
         super().__init__("wall_plan_server")
@@ -131,6 +159,7 @@ class WallPlanServer(Node):
         self._wall_plans = {}
         self._progress = {}
         self._block_bindings = {}
+        self._survey = {}
         self._active_goal_plan_name = ""
         # Outcome of the last terrain correction, echoed back to the RViz panel
         # so the operator can tell a corrected plan from an uncorrected one.
@@ -207,6 +236,7 @@ class WallPlanServer(Node):
         self._wall_plans = {}
         self._progress = {}
         self._block_bindings = {}
+        self._survey = {}
         global_bindings = data.get("block_bindings", {}) or {}
         for plan_name, plan_data in data.get("wall_plans", {}).items():
             tasks = self._resolve_plan(plan_name, plan_data)
@@ -219,6 +249,10 @@ class WallPlanServer(Node):
                 plan_name, raw_bindings or {}, tasks
             )
             self._block_bindings[plan_name] = bindings
+            if plan_data.get("survey_position"):
+                self._survey[plan_name] = [
+                    float(v) for v in plan_data["survey_position"]
+                ]
             self.get_logger().info(
                 f"Loaded wall plan '{plan_name}' with {len(tasks)} tasks"
             )
@@ -540,6 +574,34 @@ class WallPlanServer(Node):
 
         return bindings
 
+    def _rebind_to_a_free_block(self, plan_name, task, target):
+        """Bind the task's slot to a free discovered block if its bound one is not; the slot's
+        goal moves with it and the placeholder's goal-only entry is cleared."""
+        slot_id = task["block_id"]
+        bound = self._physical_block_id(plan_name, slot_id)
+        blocks = self._get_world_model_blocks() or []
+        bindings = self._block_bindings.setdefault(plan_name, {})
+        other_bound = {b for s, b in bindings.items() if s != slot_id}
+        chosen = free_block_for_slot(blocks, bound, other_bound, target[:2])
+        if chosen == bound:
+            return bound
+        bindings[slot_id] = chosen
+        self.get_logger().info(
+            f"Assembly rebinding | plan={plan_name} slot={slot_id}: '{bound}' is not a free "
+            f"block, '{chosen}' is the nearest free one"
+        )
+        req = SetBlockGoal.Request()
+        req.block_id = chosen
+        req.goal_pose = self._make_pose(*target, task["yaw"]).pose
+        req.frame_id = self._output_frame
+        self._call_service(self._goal_client, req, self._goal_service_name)
+        clear = ClearBlockGoals.Request()
+        clear.block_ids = [bound]
+        self._call_service(
+            self._clear_goals_client, clear, self._clear_goals_service_name
+        )
+        return chosen
+
     def _physical_block_id(self, plan_name: str, slot_id: str) -> str:
         """Map a wall-plan slot id to the physical world-model block id."""
         return self._block_bindings.get(plan_name, {}).get(slot_id, slot_id)
@@ -752,8 +814,8 @@ class WallPlanServer(Node):
         task = tasks[idx]
         task_id = task["task_id"]
         slot_id = task["block_id"]
-        physical_block_id = self._physical_block_id(plan_name, slot_id)
         x, y, z = task.get("goal_position") or task["position"]
+        physical_block_id = self._rebind_to_a_free_block(plan_name, task, (x, y, z))
         block_target_yaw = task["yaw"]
         gripper_yaw_offset = task.get("gripper_yaw_offset", 0.0)
         reference_slot_id = task.get("reference_block_id", "")
@@ -784,6 +846,14 @@ class WallPlanServer(Node):
                 f"Waiting for physical block '{physical_block_id}' "
                 f"for wall slot '{slot_id}'"
             )
+            # Where to look from: off the column's line of sight to the pickups, so the
+            # hanging gripper does not shadow the block it is looking for.
+            if plan_name in self._survey:
+                sx, sy = self._survey[plan_name]
+                response.pickup_pose = self._make_pose(sx, sy, 0.0, 0.0)
+                response.pickup_approach_pose = self._make_pose(
+                    sx, sy, self._pickup_a2b_approach_z, 0.0
+                )
             self.get_logger().warn(
                 f"GetNextAssemblyTask waiting | plan={plan_name} task={task_id} "
                 f"slot={slot_id} physical={physical_block_id}: no usable pose"

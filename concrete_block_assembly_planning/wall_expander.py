@@ -114,6 +114,7 @@ def compute_layout(spec: dict):
         "dir": [dir_x, dir_y, 0.0],
         "origin_frame": wall.get("origin_frame", "world"),
         "gripper_yaw_offset_deg": wall.get("gripper_yaw_offset_deg"),
+        "relative_targets": bool(wall.get("relative_targets", False)),
     }
     return blocks, meta
 
@@ -177,9 +178,33 @@ def to_wall_plan(blocks, meta: dict) -> list:
         item = {"id": b["id"], "yaw_deg": b["yaw_deg"]}
         if gripper_yaw is not None:
             item["gripper_yaw_offset_deg"] = gripper_yaw
-        item["absolute_position"] = [round(v, 6) for v in (b["x"], b["y"], b["z"])]
+        position = [round(v, 6) for v in (b["x"], b["y"], b["z"])]
+        ref = _reference(b, blocks) if meta.get("relative_targets") else None
+        if ref is None:
+            item["absolute_position"] = position
+        else:
+            # Placed against the neighbour the lidar measured, not the plan: whatever the
+            # neighbour's error, and the boom's bend, the gap between the two is what is built.
+            item["relative_to_world_model"] = ref["id"]
+            item["offset"] = [round(b[k] - ref[k], 6) for k in ("x", "y", "z")]
+            item["fallback_absolute_position"] = position
+            item["yaw_deg"] = b["yaw_deg"] - ref["yaw_deg"]
         seq.append(item)
     return seq
+
+
+def _reference(block, blocks):
+    """The placed block a relative target follows: the previous one in the course, else
+    the first block it rests on; None for the wall's first block."""
+    if block["index"] > 0:
+        return next(
+            b
+            for b in blocks
+            if b["course"] == block["course"] and b["index"] == block["index"] - 1
+        )
+    if block["supports"]:
+        return next(b for b in blocks if b["id"] == block["supports"][0])
+    return None
 
 
 def build_block_bindings(blocks, wall: dict) -> dict:
@@ -219,6 +244,8 @@ def expand(spec: dict, name: str | None = None) -> dict:
     bindings = build_block_bindings(blocks, wall)
     if bindings:
         plan_entry["block_bindings"] = bindings
+    if wall.get("survey_position"):
+        plan_entry["survey_position"] = [float(v) for v in wall["survey_position"]]
     plan_entry["sequence"] = to_wall_plan(blocks, meta)
     return {
         "defaults": {"block_size": meta["block_size"]},

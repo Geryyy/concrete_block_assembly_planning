@@ -144,3 +144,22 @@ def test_explicit_block_bindings_pass_through():
         compute_layout(SPEC)[0], {"block_bindings": explicit}
     )
     assert bindings == explicit
+
+
+def test_relative_targets_follow_the_neighbour_with_the_planned_gap():
+    spec = {"wall": {**SPEC["wall"], "relative_targets": True}}
+    seq = {
+        item["id"]: item for item in expand(spec)["wall_plans"]["test_wall"]["sequence"]
+    }
+
+    assert "absolute_position" in seq["c0_b0"]  # the wall's first block anchors it
+    assert seq["c0_b1"]["relative_to_world_model"] == "c0_b0"
+    assert seq["c0_b1"]["offset"] == [1.0, 0.0, 0.0]  # pitch 0.9 + 0.1 clearance
+    assert seq["c1_b0"]["relative_to_world_model"] == "c0_b0"  # the block it rests on
+    assert seq["c1_b0"]["offset"] == [0.5, 0.0, 0.6]
+    assert seq["c1_b1"]["fallback_absolute_position"] == [2.5, 2.0, 0.6]
+
+
+def test_survey_position_passes_through():
+    spec = {"wall": {**SPEC["wall"], "survey_position": [-14.5, 2.0]}}
+    assert expand(spec)["wall_plans"]["test_wall"]["survey_position"] == [-14.5, 2.0]

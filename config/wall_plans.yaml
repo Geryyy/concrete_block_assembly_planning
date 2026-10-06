@@ -24,6 +24,9 @@ wall_plans:
   example_wall:
     block_bindings: {c0_b0: block_0, c0_b1: block_1, c0_b2: block_2, c1_b0: block_3,
       c1_b1: block_4}
+    # Where the crane looks from for a block it has not found yet: beside the pickup rows,
+    # off the column-mounted lidar's line of sight, so the hanging gripper hides none.
+    survey_position: [-14.5, 2.0]
     sequence:
     - id: c0_b0
       yaw_deg: 0.0
