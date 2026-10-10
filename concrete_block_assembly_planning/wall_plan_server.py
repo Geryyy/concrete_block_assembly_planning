@@ -4,7 +4,9 @@
 Serves GetNextAssemblyTask. Reads wall_plans.yaml for target (place)
 positions and the plan sequence. Queries the world model for actual block
 pickup poses at runtime; if the physical block is not available yet, the
-current task waits without advancing plan progress.
+current task waits without advancing plan progress. A handed-out task only
+counts as done once the world model reports its block TASK_PLACED, so a
+cancelled or aborted goal gets its task handed out again.
 
 All poses are emitted in the configured ``output_frame`` (default ``world``).
 The grip trajectory server handles the block-CoG -> TCP offset downstream.
@@ -76,6 +78,25 @@ def free_block_for_slot(blocks, bound, other_bound, target_xy):
             b.pose.position.x - target_xy[0], b.pose.position.y - target_xy[1]
         ),
     ).id
+
+
+# Handing a task out is not progress: a goal cancelled or aborted after the hand-out never
+# places its block, and the plan would skip that slot for good. Only the world model knows a
+# block really landed -- subtree_place_block's WriteBlockPoseFromGripper marks it TASK_PLACED
+# -- so the hand-out is confirmed against that. Only the one outstanding task is rolled back,
+# never placed tasks in general: reset_plan and activate zero progress, and a reset must
+# restart at task 1 even though the blocks it already placed are still TASK_PLACED. That is
+# what `handed_out >= progress` does -- it drops a hand-out the reset left behind.
+def next_task_index(tasks, blocks, bindings, progress, handed_out):
+    """Index to serve: ``progress``, or the outstanding ``handed_out`` task if unplaced."""
+    if handed_out is None or handed_out >= progress:
+        return progress
+    slot_id = tasks[handed_out]["block_id"]
+    physical_id = bindings.get(slot_id, slot_id)
+    placed = any(
+        b.id == physical_id and b.task_status == Block.TASK_PLACED for b in blocks
+    )
+    return progress if placed else handed_out
 
 
 class WallPlanServer(Node):
@@ -158,6 +179,7 @@ class WallPlanServer(Node):
 
         self._wall_plans = {}
         self._progress = {}
+        self._handed_out = {}
         self._block_bindings = {}
         self._survey = {}
         self._active_goal_plan_name = ""
@@ -235,6 +257,7 @@ class WallPlanServer(Node):
 
         self._wall_plans = {}
         self._progress = {}
+        self._handed_out = {}
         self._block_bindings = {}
         self._survey = {}
         global_bindings = data.get("block_bindings", {}) or {}
@@ -802,7 +825,13 @@ class WallPlanServer(Node):
             return response
 
         tasks = self._wall_plans[plan_name]
-        idx = self._progress.get(plan_name, 0)
+        idx = next_task_index(
+            tasks,
+            self._get_world_model_blocks() or [],
+            self._block_bindings.get(plan_name, {}),
+            self._progress.get(plan_name, 0),
+            self._handed_out.get(plan_name),
+        )
 
         if idx >= len(tasks):
             response.success = True
@@ -901,6 +930,9 @@ class WallPlanServer(Node):
             else:
                 target_source = "yaml"
 
+        # Handed out, not yet done: next_task_index comes back to this task until the world
+        # model says its block is placed.
+        self._handed_out[plan_name] = idx
         self._progress[plan_name] = idx + 1
 
         target_tool_yaw = normalize_angle(block_target_yaw + gripper_yaw_offset)
