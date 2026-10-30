@@ -30,9 +30,14 @@ from geometry_msgs.msg import PoseStamped
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from concrete_block_assembly_planning import terrain
+
+#: CBSRunPanel's run header: `key=value`, latched, report only.
+TASK_STATUS_TOPIC = "/cbs/status/task"
 
 
 def yaw_to_quaternion(yaw_rad: float):
@@ -50,6 +55,21 @@ def quaternion_to_yaw(q) -> float:
 def normalize_angle(angle_rad: float) -> float:
     """Normalize angle to [-pi, pi]."""
     return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+
+
+def task_status(
+    plan_name, index, total, slot_id, block_id, pickup, target, approach, message
+) -> str:
+    """`/cbs/status/task`; ``approach`` is the waypoint the tree measures its miss against."""
+    px, py, pz = pickup
+    tx, ty, tz = target
+    ax, ay = approach
+    return (
+        f"plan={plan_name} task={index}/{total} slot={slot_id} block={block_id} "
+        f"pickup_x={px:.3f} pickup_y={py:.3f} pickup_z={pz:.3f} "
+        f"target_x={tx:.3f} target_y={ty:.3f} target_z={tz:.3f} "
+        f"approach_x={ax:.3f} approach_y={ay:.3f} msg={message}"
+    )
 
 
 def free_block_for_slot(blocks, bound, other_bound, target_xy):
@@ -187,6 +207,17 @@ class WallPlanServer(Node):
         # so the operator can tell a corrected plan from an uncorrected one.
         self._terrain_note = ""
         self._load_wall_plans()
+
+        self._task_status = self.create_publisher(
+            String,
+            TASK_STATUS_TOPIC,
+            QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                history=HistoryPolicy.KEEP_LAST,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
 
         # Services
         self.create_service(
@@ -964,6 +995,21 @@ class WallPlanServer(Node):
             f"Task {idx + 1}/{len(tasks)}: slot {slot_id} -> {physical_block_id}"
         )
 
+        self._task_status.publish(
+            String(
+                data=task_status(
+                    plan_name,
+                    idx + 1,
+                    len(tasks),
+                    slot_id,
+                    physical_block_id,
+                    (px, py, pz),
+                    (x, y, z),
+                    (ax, ay),
+                    response.message,
+                )
+            )
+        )
         self.get_logger().info(
             f"GetNextAssemblyTask | plan={plan_name} task={task_id} "
             f"slot={slot_id} physical={physical_block_id} "
