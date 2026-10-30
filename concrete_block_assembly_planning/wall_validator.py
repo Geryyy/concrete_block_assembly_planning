@@ -17,11 +17,12 @@ drags the wall origin in RViz. Results drive the goal-ghost recoloring
 from __future__ import annotations
 
 import math
+
 import yaml
 
 # Generous defaults; override per deployment via parameters.
 DEFAULT_REACH = {
-    "base_xy": [0.0, 0.0],   # crane slewing column in world (x, y)
+    "base_xy": [0.0, 0.0],  # crane slewing column in world (x, y)
     "reach_min": 2.0,
     "reach_max": 12.0,
     "z_min": -2.0,
@@ -111,4 +112,10 @@ def load_static_scene_from_world_model_yaml(path: str):
         return []
     objects = yaml.safe_load(raw) or []
     # Keep only entries with both position and dimensions.
-    return [o for o in objects if "position" in o and "dimensions" in o]
+    return [
+        o
+        for o in objects
+        if "position" in o
+        and "dimensions" in o
+        and o.get("id") != "ground"  # blocks rest on it
+    ]

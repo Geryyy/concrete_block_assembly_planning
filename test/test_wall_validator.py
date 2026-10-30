@@ -3,6 +3,7 @@
 from concrete_block_assembly_planning.wall_validator import (
     check_collisions,
     check_reach,
+    load_static_scene_from_world_model_yaml,
     validate_layout,
 )
 
@@ -21,9 +22,9 @@ def _block(bid, x, y, z, yaw=0.0):
 
 def test_reach_in_and_out():
     assert check_reach(_block("a", 5.0, 0.0, 0.0), REACH)[0] is True
-    assert check_reach(_block("b", 0.5, 0.0, 0.0), REACH)[0] is False   # too close
+    assert check_reach(_block("b", 0.5, 0.0, 0.0), REACH)[0] is False  # too close
     assert check_reach(_block("c", 11.0, 0.0, 0.0), REACH)[0] is False  # too far
-    assert check_reach(_block("d", 5.0, 0.0, 9.0), REACH)[0] is False   # too high
+    assert check_reach(_block("d", 5.0, 0.0, 9.0), REACH)[0] is False  # too high
 
 
 def test_collision_detects_overlap_and_clears_gap():
@@ -55,3 +56,17 @@ def test_validate_layout_aggregate():
     assert results["ok"]["valid"] is True
     assert results["far"]["valid"] is False
     assert results["far"]["reachable"] is False
+
+
+def test_the_ground_is_not_a_static_obstacle_for_the_layout(tmp_path):
+    """A block on terrain measured below world z 0 would overlap the ground box."""
+    path = tmp_path / "world_model.yaml"
+    path.write_text(
+        "world_model_node:\n  ros__parameters:\n    world_model:\n"
+        "      static_scene_objects: |\n"
+        "        - {id: ground, position: [0, 0, -0.05], dimensions: [40, 40, 0.1]}\n"
+        "        - {id: hedge, position: [0, 9, 1.5], dimensions: [20, 5, 3]}\n"
+    )
+    assert [o["id"] for o in load_static_scene_from_world_model_yaml(str(path))] == [
+        "hedge"
+    ]
