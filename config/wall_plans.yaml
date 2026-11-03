@@ -63,3 +63,16 @@ wall_plans:
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
       absolute_position: [-14.08, -3.0, 0.3]
+  # The two blocks of world_model_seed_truck_loading.yaml off the truck bed; run with lift_height:=2.6.
+  truck_wall:
+    block_bindings: {c0_b0: block_1, c0_b1: block_2}
+    survey_position: [-14.5, 2.0]
+    sequence:
+    - id: c0_b0
+      yaw_deg: 0.0
+      gripper_yaw_offset_deg: 90.0
+      absolute_position: [-15.0, -3.0, 0.3]
+    - id: c0_b1
+      yaw_deg: 0.0
+      gripper_yaw_offset_deg: 90.0
+      absolute_position: [-14.08, -3.0, 0.3]
