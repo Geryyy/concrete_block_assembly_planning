@@ -119,6 +119,12 @@ def next_task_index(tasks, blocks, bindings, progress, handed_out):
     return progress if placed else handed_out
 
 
+#: Hover over a raised pickup (truck bed), world z of the K5 goal, 0.99 m over the TCP. What it
+#: clears is the bed's posts, not the block: TCP from K0 4.0 m reaches both bed spots; higher
+#: and the grip server's IK loses the descent near the column (K8 at world 6.5 m failed).
+RAISED_PICKUP_HOVER_Z_M = 6.3
+
+
 class WallPlanServer(Node):
     def __init__(self):
         super().__init__("wall_plan_server")
@@ -985,8 +991,13 @@ class WallPlanServer(Node):
         # All poses are raw block CoG — grip server handles TCP offset
         # Pose orientation carries the desired TCP yaw for the BT motion nodes.
         response.pickup_pose = self._make_pose(px, py, pz, pickup_tool_yaw)
+        # The configured height is for a block on the ground; over a raised one (truck bed) the
+        # hanging tool would stand among the bed's posts.
+        pickup_hover_z = self._pickup_a2b_approach_z
+        if pz > self._block_height:
+            pickup_hover_z = max(pickup_hover_z, RAISED_PICKUP_HOVER_Z_M)
         response.pickup_approach_pose = self._make_pose(
-            px, py, self._pickup_a2b_approach_z, pickup_tool_yaw
+            px, py, pickup_hover_z, pickup_tool_yaw
         )
         response.target_pose = self._make_pose(x, y, z, target_tool_yaw)
         response.reference_pose = self._make_pose(x, y, z, block_target_yaw)
