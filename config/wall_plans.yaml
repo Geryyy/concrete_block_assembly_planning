@@ -26,7 +26,12 @@ wall_plans:
       c1_b1: block_4}
     # Where the crane looks from for a block it has not found yet: beside the pickup rows,
     # off the column-mounted lidar's line of sight, so the hanging gripper hides none.
-    survey_position: [-14.5, 2.0]
+    # y 3.9, behind the row the plans' +2 m put at y 2.0 (lab day 2026-11-04). Not 4.0:
+    # /a2b_movement refuses that goal, 0.085 m of hedge clearance against the 0.100 m it
+    # requires. 3.9 is the nearest that plans, measured - so its margin is about the
+    # required 0.100 m, on a rigid model and a hand-placed hedge box. 3.5 plans the same
+    # and clears the lidar's line to block_2 just as well, if a lab day wants the margin.
+    survey_position: [-14.5, 3.9]
     sequence:
     - id: c0_b0
       yaw_deg: 0.0
@@ -51,7 +56,7 @@ wall_plans:
   # example_wall's first three: two on the ground, one bridging them
   wall_2_1:
     block_bindings: {c0_b0: block_0, c0_b1: block_1, c1_b0: block_2}
-    survey_position: [-14.5, 2.0]
+    survey_position: [-14.5, 3.9]
     sequence:
     - id: c0_b0
       yaw_deg: 0.0
@@ -98,7 +103,7 @@ wall_plans:
   # The two blocks of world_model_seed_truck_loading.yaml off the truck bed; run with lift_height:=2.6.
   truck_wall:
     block_bindings: {c0_b0: block_1, c0_b1: block_2}
-    survey_position: [-14.5, 2.0]
+    survey_position: [-14.5, 3.9]
     sequence:
     - id: c0_b0
       yaw_deg: 0.0
