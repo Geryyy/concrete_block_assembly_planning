@@ -994,8 +994,10 @@ class WallPlanServer(Node):
         # The configured height is for a block on the ground; over a raised one (truck bed) the
         # hanging tool would stand among the bed's posts.
         pickup_hover_z = self._pickup_a2b_approach_z
-        if pz > self._block_height:
-            pickup_hover_z = max(pickup_hover_z, RAISED_PICKUP_HOVER_Z_M)
+        # Disabled lab day 2026-11-04: also fired for a block stacked on a ground one
+        # (world z 1.08 > 0.6). Re-enable for truck pickups.
+        # if pz > self._block_height:
+        #     pickup_hover_z = max(pickup_hover_z, RAISED_PICKUP_HOVER_Z_M)
         response.pickup_approach_pose = self._make_pose(
             px, py, pickup_hover_z, pickup_tool_yaw
         )
