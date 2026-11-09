@@ -9,16 +9,16 @@ wall_plans:
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
   stack_block_1_on_block_2:
-    block_bindings: {c0_b0: block_1, c0_b1: block_2}
+    block_bindings: {c0_b0: block_0, c0_b1: block_1}
     sequence:
     - id: c0_b0
-      absolute_position: [-14.0, 0.0, 0.3]
+      absolute_position: [-14.0, -2.0, 0.3]
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
     - id: c0_b1
       relative_to_world_model: c0_b0
       offset: [0.0, 0.0, 0.6]
-      fallback_absolute_position: [-14.0, 0.0, 0.9]
+      fallback_absolute_position: [-14.0, -2.0, 0.9]
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
   example_wall:
@@ -80,11 +80,11 @@ wall_plans:
     - id: c0_b1
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-14.08, -1.0, 0.3]
+      absolute_position: [-14.1, -1.0, 0.3]  # in contact, pitch = block length 0.9
     - id: c0_b2
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-13.16, -1.0, 0.3]
+      absolute_position: [-13.2, -1.0, 0.3]
   row3_middle_last:
     block_bindings: {c0_b0: block_0, c0_b1: block_1, c0_b2: block_2}
     sequence:
