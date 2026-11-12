@@ -72,24 +72,97 @@ def task_status(
     )
 
 
+#: A block's extents [x, y, z] m = wall_plans.yaml defaults.block_size; Block.msg carries none.
+BLOCK_SIZE_M = (0.9, 0.6, 0.6)
+
+#: Bottom-over-top gap that still counts as resting on. Must absorb the 0.15 m a one-face
+#: coarse fit can be off and the 0.05 a crosswise block gains bearing on stud tops (322);
+#: anything under half the block height cannot confuse a same-level neighbour or a block two
+#: layers up, both 0.6 m off.
+RESTING_TOLERANCE_M = 0.25
+
+
+def _footprints_overlap(a, b):
+    """Do the two blocks' yawed xy footprints overlap? Separating-axis test on two rectangles."""
+    hx, hy = BLOCK_SIZE_M[0] / 2.0, BLOCK_SIZE_M[1] / 2.0
+    yaw_a = quaternion_to_yaw(a.pose.orientation)
+    yaw_b = quaternion_to_yaw(b.pose.orientation)
+    dx = b.pose.position.x - a.pose.position.x
+    dy = b.pose.position.y - a.pose.position.y
+    for yaw, other_yaw in ((yaw_a, yaw_b), (yaw_b, yaw_a)):
+        c, s = math.cos(yaw), math.sin(yaw)
+        oc, osn = math.cos(other_yaw), math.sin(other_yaw)
+        for (ax, ay), own in (((c, s), hx), ((-s, c), hy)):
+            reach = hx * abs(ax * oc + ay * osn) + hy * abs(-ax * osn + ay * oc)
+            if abs(dx * ax + dy * ay) > own + reach:
+                return False
+    return True
+
+
+def covering_blocks(blocks):
+    """``{covered block id: id of the block resting on it}``.
+
+    A block rests on another when its footprint overlaps it in xy and its bottom sits within
+    ``RESTING_TOLERANCE_M`` of that block's top. A block in the jaws or already in the wall
+    (TASK_MOVE/TASK_PLACED) rests on nothing; a goal-only entry has no pose, so it neither
+    covers nor is covered.
+    """
+    known = [b for b in blocks if b.pose_status != Block.POSE_UNKNOWN]
+    on_top = [
+        b for b in known if b.task_status in (Block.TASK_UNKNOWN, Block.TASK_FREE)
+    ]
+    covered = {}
+    for b in known:
+        top = b.pose.position.z + BLOCK_SIZE_M[2] / 2.0
+        for other in on_top:
+            bottom = other.pose.position.z - BLOCK_SIZE_M[2] / 2.0
+            if other.id == b.id or abs(bottom - top) > RESTING_TOLERANCE_M:
+                continue
+            if _footprints_overlap(b, other):
+                covered[b.id] = other.id
+                break
+    return covered
+
+
+def pickable_blocks(blocks):
+    """The blocks that can be picked now: free, precisely known, nothing resting on them."""
+    # Precise only: a block half hidden behind a lifted one came back 15 cm off as a one-face
+    # (coarse) fit, and the jaws closed on nothing. A coarse block waits for a better view.
+    covered = covering_blocks(blocks)
+    return [
+        b
+        for b in blocks
+        if b.pose_status == Block.POSE_PRECISE
+        and b.task_status == Block.TASK_FREE
+        and b.id not in covered
+    ]
+
+
+def covered_reason(covering) -> str:
+    """Which block pins which, for the waiting message: ``block_0, block_1 covered by block_2``."""
+    by_coverer = {}
+    for covered, coverer in covering.items():
+        by_coverer.setdefault(coverer, []).append(covered)
+    return "; ".join(
+        f"{', '.join(sorted(ids))} covered by {coverer}"
+        for coverer, ids in sorted(by_coverer.items())
+    )
+
+
 def free_block_for_slot(blocks, bound, other_bound, target_xy):
-    """The id to pick for a slot: ``bound`` if it is a free precisely known block, else the
-    free precise block nearest the slot's target that no other slot is bound to, else ``bound``.
+    """The id to pick for a slot: ``bound`` if it is pickable, else the pickable block nearest
+    the slot's target -- preferring one no other slot is bound to -- else ``bound``.
 
     Discovery names blocks in its own order, and the lidar on the slewing column finds a block
     hidden behind another only once that one is picked, so a fixed binding can point at a
-    goal-only placeholder or at nothing.
+    goal-only placeholder, at nothing, or at a block pinned under the one above it.
     """
-    # Precise only: a block half hidden behind a lifted one came back 15 cm off as a one-face
-    # (coarse) fit, and the jaws closed on nothing. A coarse block waits for a better view.
-    free = [
-        b
-        for b in blocks
-        if b.pose_status == Block.POSE_PRECISE and b.task_status == Block.TASK_FREE
-    ]
-    if any(b.id == bound for b in free):
+    pickable = pickable_blocks(blocks)
+    if any(b.id == bound for b in pickable):
         return bound
-    candidates = [b for b in free if b.id not in other_bound]
+    # A block another slot is bound to still beats waiting: that slot rebinds when its own
+    # turn comes. Without this, a pile whose top block is bound to a later slot never starts.
+    candidates = [b for b in pickable if b.id not in other_bound] or pickable
     if not candidates:
         return bound
     return min(
@@ -635,20 +708,25 @@ class WallPlanServer(Node):
         return bindings
 
     def _rebind_to_a_free_block(self, plan_name, task, target):
-        """Bind the task's slot to a free discovered block if its bound one is not; the slot's
-        goal moves with it and the placeholder's goal-only entry is cleared."""
+        """Bind the task's slot to a pickable discovered block if its bound one is not; the
+        slot's goal moves with it and the placeholder's goal-only entry is cleared. Returns
+        ``(block id, why nothing can be picked)``; the reason is empty in the normal case."""
         slot_id = task["block_id"]
         bound = self._physical_block_id(plan_name, slot_id)
         blocks = self._get_world_model_blocks() or []
         bindings = self._block_bindings.setdefault(plan_name, {})
         other_bound = {b for s, b in bindings.items() if s != slot_id}
         chosen = free_block_for_slot(blocks, bound, other_bound, target[:2])
+        # Nothing pickable falls back to the binding itself, which may be the block pinned under
+        # the one above it. Wait for that one to be lifted instead of closing the jaws on this.
+        covering = covering_blocks(blocks)
+        blocked = covered_reason(covering) if chosen in covering else ""
         if chosen == bound:
-            return bound
+            return bound, blocked
         bindings[slot_id] = chosen
         self.get_logger().info(
-            f"Assembly rebinding | plan={plan_name} slot={slot_id}: '{bound}' is not a free "
-            f"block, '{chosen}' is the nearest free one"
+            f"Assembly rebinding | plan={plan_name} slot={slot_id}: '{bound}' is not "
+            f"pickable, '{chosen}' is the nearest pickable one"
         )
         req = SetBlockGoal.Request()
         req.block_id = chosen
@@ -660,7 +738,7 @@ class WallPlanServer(Node):
         self._call_service(
             self._clear_goals_client, clear, self._clear_goals_service_name
         )
-        return chosen
+        return chosen, blocked
 
     def _physical_block_id(self, plan_name: str, slot_id: str) -> str:
         """Map a wall-plan slot id to the physical world-model block id."""
@@ -881,7 +959,9 @@ class WallPlanServer(Node):
         task_id = task["task_id"]
         slot_id = task["block_id"]
         x, y, z = task.get("goal_position") or task["position"]
-        physical_block_id = self._rebind_to_a_free_block(plan_name, task, (x, y, z))
+        physical_block_id, blocked = self._rebind_to_a_free_block(
+            plan_name, task, (x, y, z)
+        )
         block_target_yaw = task["yaw"]
         gripper_yaw_offset = task.get("gripper_yaw_offset", 0.0)
         reference_slot_id = task.get("reference_block_id", "")
@@ -901,7 +981,7 @@ class WallPlanServer(Node):
         # Query world model for the physical pickup pose. Goal-only entries are
         # not movable yet; keep the plan index parked on this task until the
         # physical block has been discovered/seeded.
-        wm_pose = self._query_block_pose(physical_block_id)
+        wm_pose = None if blocked else self._query_block_pose(physical_block_id)
         if wm_pose is None:
             response.success = False
             response.has_task = True
@@ -910,7 +990,7 @@ class WallPlanServer(Node):
             response.reference_block_id = reference_block_id
             response.message = (
                 f"Waiting for physical block '{physical_block_id}' "
-                f"for wall slot '{slot_id}'"
+                f"for wall slot '{slot_id}'" + (f": {blocked}" if blocked else "")
             )
             # Where to look from: off the column's line of sight to the pickups, so the
             # hanging gripper does not shadow the block it is looking for.
@@ -922,7 +1002,8 @@ class WallPlanServer(Node):
                 )
             self.get_logger().warn(
                 f"GetNextAssemblyTask waiting | plan={plan_name} task={task_id} "
-                f"slot={slot_id} physical={physical_block_id}: no usable pose"
+                f"slot={slot_id} physical={physical_block_id}: "
+                f"{blocked or 'no usable pose'}"
             )
             return response
 
