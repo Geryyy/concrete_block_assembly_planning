@@ -158,7 +158,9 @@ def free_block_for_slot(blocks, bound, other_bound, target_xy):
     goal-only placeholder, at nothing, or at a block pinned under the one above it.
     """
     pickable = pickable_blocks(blocks)
-    if any(b.id == bound for b in pickable):
+    # In the jaws: rebound away, the pick path would open them over another block (327).
+    in_jaws = any(b.id == bound and b.task_status == Block.TASK_MOVE for b in blocks)
+    if in_jaws or any(b.id == bound for b in pickable):
         return bound
     # A block another slot is bound to still beats waiting: that slot rebinds when its own
     # turn comes. Without this, a pile whose top block is bound to a later slot never starts.
@@ -176,20 +178,43 @@ def free_block_for_slot(blocks, bound, other_bound, target_xy):
 # Handing a task out is not progress: a goal cancelled or aborted after the hand-out never
 # places its block, and the plan would skip that slot for good. Only the world model knows a
 # block really landed -- subtree_place_block's WriteBlockPoseFromGripper marks it TASK_PLACED
-# -- so the hand-out is confirmed against that. Only the one outstanding task is rolled back,
-# never placed tasks in general: reset_plan and activate zero progress, and a reset must
-# restart at task 1 even though the blocks it already placed are still TASK_PLACED. That is
-# what `handed_out >= progress` does -- it drops a hand-out the reset left behind.
+# -- so the hand-out is confirmed against that. A reset or a re-activation zeroes progress, but
+# a slot that already holds a placed block is never served again (327: the next block went
+# into the occupied slot).
 def next_task_index(tasks, blocks, bindings, progress, handed_out):
-    """Index to serve: ``progress``, or the outstanding ``handed_out`` task if unplaced."""
-    if handed_out is None or handed_out >= progress:
-        return progress
-    slot_id = tasks[handed_out]["block_id"]
-    physical_id = bindings.get(slot_id, slot_id)
-    placed = any(
-        b.id == physical_id and b.task_status == Block.TASK_PLACED for b in blocks
-    )
-    return progress if placed else handed_out
+    """Index to serve: the slot of the block in the jaws; else the first slot from ``progress``
+    (or the outstanding ``handed_out``) that holds no placed block."""
+
+    def bound(task):
+        return bindings.get(task["block_id"], task["block_id"])
+
+    moving = {b.id for b in blocks if b.task_status == Block.TASK_MOVE}
+    for idx, task in enumerate(tasks):
+        if bound(task) in moving:
+            return idx
+    placed = [b for b in blocks if b.task_status == Block.TASK_PLACED]
+    idx = progress if handed_out is None or handed_out >= progress else handed_out
+    while idx < len(tasks) and slot_is_occupied(tasks[idx], bound(tasks[idx]), placed):
+        idx += 1
+    return idx
+
+
+def slot_is_occupied(task, bound_id, placed):
+    """Its bound block is placed, or a placed block sits on its target (a rebinding the server
+    lost on restart)."""
+    target = task.get("goal_position") or task.get("position")
+    for b in placed:
+        if b.id == bound_id:
+            return True
+        if target is None or b.pose_status == Block.POSE_UNKNOWN:
+            continue
+        p = b.pose.position
+        if (
+            math.hypot(p.x - target[0], p.y - target[1]) < BLOCK_SIZE_M[1] / 2.0
+            and abs(p.z - target[2]) < BLOCK_SIZE_M[2] / 2.0
+        ):
+            return True
+    return False
 
 
 #: Hover over a raised pickup (truck bed), world z of the K5 goal, 0.99 m over the TCP. What it
@@ -723,6 +748,10 @@ class WallPlanServer(Node):
         blocked = covered_reason(covering) if chosen in covering else ""
         if chosen == bound:
             return bound, blocked
+        # Swap, not copy: a slot left bound to a block placed elsewhere reads as occupied (327).
+        for other_slot, physical in bindings.items():
+            if physical == chosen and other_slot != slot_id:
+                bindings[other_slot] = bound
         bindings[slot_id] = chosen
         self.get_logger().info(
             f"Assembly rebinding | plan={plan_name} slot={slot_id}: '{bound}' is not "
@@ -940,13 +969,38 @@ class WallPlanServer(Node):
             return response
 
         tasks = self._wall_plans[plan_name]
+        blocks = self._get_world_model_blocks()
+        if blocks is None:
+            # No block states, so neither the one in the jaws nor the placed ones: error, not
+            # a wait (which sends the tree on a discovery move).
+            response.success = False
+            response.has_task = False
+            response.message = (
+                "World model unavailable: cannot tell which blocks are placed"
+            )
+            self.get_logger().error(response.message)
+            return response
         idx = next_task_index(
             tasks,
-            self._get_world_model_blocks() or [],
+            blocks,
             self._block_bindings.get(plan_name, {}),
             self._progress.get(plan_name, 0),
             self._handed_out.get(plan_name),
         )
+        moving = {b.id for b in blocks if b.task_status == Block.TASK_MOVE}
+        stray = sorted(
+            moving - {self._physical_block_id(plan_name, t["block_id"]) for t in tasks}
+        )
+        if stray:
+            # An error, not a wait: a wait sends the tree on an empty-hook discovery move.
+            response.success = False
+            response.has_task = False
+            response.message = (
+                f"{', '.join(stray)} is TASK_MOVE but no slot of '{plan_name}' is bound to "
+                "it - in the jaws or lost: set it down and reset it to TASK_FREE"
+            )
+            self.get_logger().error(response.message)
+            return response
 
         if idx >= len(tasks):
             response.success = True
@@ -962,6 +1016,8 @@ class WallPlanServer(Node):
         physical_block_id, blocked = self._rebind_to_a_free_block(
             plan_name, task, (x, y, z)
         )
+        # A wait sends the tree on an empty-hook discovery move: never with this one clamped.
+        in_jaws = physical_block_id in moving
         block_target_yaw = task["yaw"]
         gripper_yaw_offset = task.get("gripper_yaw_offset", 0.0)
         reference_slot_id = task.get("reference_block_id", "")
@@ -984,7 +1040,7 @@ class WallPlanServer(Node):
         wm_pose = None if blocked else self._query_block_pose(physical_block_id)
         if wm_pose is None:
             response.success = False
-            response.has_task = True
+            response.has_task = not in_jaws
             response.task_id = task_id
             response.target_block_id = physical_block_id
             response.reference_block_id = reference_block_id
@@ -1024,7 +1080,7 @@ class WallPlanServer(Node):
                 target_source = f"world_model:{reference_block_id}"
             else:
                 response.success = False
-                response.has_task = True
+                response.has_task = not in_jaws
                 response.task_id = task_id
                 response.target_block_id = physical_block_id
                 response.reference_block_id = reference_block_id

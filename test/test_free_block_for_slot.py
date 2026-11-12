@@ -10,6 +10,7 @@ from concrete_block_assembly_planning.wall_plan_server import (
     yaw_to_quaternion,
 )
 from concrete_block_world_model_interfaces.msg import Block
+from geometry_msgs.msg import PoseStamped
 
 
 def block(
@@ -36,6 +37,12 @@ def seibersdorf_storage(top_task=Block.TASK_FREE):
 
 def test_a_free_bound_block_is_kept():
     blocks = [block("block_0", -13.0), block("block_5", -14.0)]
+    assert free_block_for_slot(blocks, "block_0", set(), (-14.0, 0.0)) == "block_0"
+
+
+def test_a_block_in_the_jaws_is_never_rebound_away_from():
+    # 327: rebound to block_5, the pick path opened the jaws at block_5's hover
+    blocks = [block("block_0", -13.0, task=Block.TASK_MOVE), block("block_5", -14.0)]
     assert free_block_for_slot(blocks, "block_0", set(), (-14.0, 0.0)) == "block_0"
 
 
@@ -132,9 +139,24 @@ class _StubServer:
     def __init__(self, blocks, bindings):
         self._blocks = blocks
         self._block_bindings = {"wall_2_1": dict(bindings)}
+        self._output_frame = "world"
+        self._goal_client = self._clear_goals_client = None
+        self._goal_service_name = self._clear_goals_service_name = ""
 
     def _get_world_model_blocks(self):
         return self._blocks
+
+    def _make_pose(self, *args):
+        return PoseStamped()
+
+    def _call_service(self, *args):
+        return None
+
+    def get_logger(self):
+        return self
+
+    def info(self, *args):
+        pass
 
 
 def test_the_server_reports_the_reason_instead_of_the_pinned_block():
@@ -146,3 +168,17 @@ def test_the_server_reports_the_reason_instead_of_the_pinned_block():
     )
     assert chosen == "block_1"
     assert blocked == "block_1, block_2 covered by block_0"
+
+
+def test_a_slot_whose_block_was_taken_gets_the_takers_binding():
+    # 327: c0_b0 took c0_b1's block_1; c0_b1 left on block_1 read as occupied once it was placed
+    blocks = [block("block_0", 0.0, pose=Block.POSE_UNKNOWN), block("block_1", -14.0)]
+    server = _StubServer(blocks, {"c0_b0": "block_0", "c0_b1": "block_1"})
+    chosen, _ = server._rebind_to_a_free_block(
+        "wall_2_1", {"block_id": "c0_b0", "yaw": 0.0}, (-15.0, -1.0, 0.3)
+    )
+    assert chosen == "block_1"
+    assert server._block_bindings["wall_2_1"] == {
+        "c0_b0": "block_1",
+        "c0_b1": "block_0",
+    }
