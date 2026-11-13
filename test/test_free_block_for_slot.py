@@ -4,6 +4,7 @@ import math
 
 from concrete_block_assembly_planning.wall_plan_server import (
     WallPlanServer,
+    blocks_in_the_wall,
     covered_reason,
     covering_blocks,
     free_block_for_slot,
@@ -110,6 +111,44 @@ def test_a_bottom_block_is_pickable_once_the_top_one_is_lifted():
         assert free_block_for_slot(blocks, "x", set(), (-15.0, -1.0)) == "block_2"
 
 
+def test_a_block_already_in_the_wall_is_not_stock():
+    # 21: a restart rediscovers the placed wall blocks as TASK_FREE/PRECISE, and the nearest
+    # "pickable" block to a slot target is then the one standing in it
+    targets = [[-15.0, -1.0, 0.3], [-14.0, -1.0, 0.3]]
+    blocks = [block("block_0", -15.12, -0.91, 0.45), block("block_9", -11.0, 3.3, 0.3)]
+    in_wall = blocks_in_the_wall(blocks, targets)
+    assert in_wall == {
+        "block_0"
+    }  # placed and re-fit high, still inside the half-block window
+    assert (
+        free_block_for_slot(blocks, "block_0", set(), (-14.0, -1.0), in_wall)
+        == "block_9"
+    )
+    # without the wall's targets it picks the block out of the wall again
+    assert free_block_for_slot(blocks, "block_0", set(), (-14.0, -1.0)) == "block_0"
+
+
+def test_nothing_left_on_the_pile_waits_rather_than_taking_the_wall_apart():
+    # the last-resort `return bound` hands back a block this function just ruled out: after a
+    # restart reverted the bindings that can be one standing in the wall, so the server has to
+    # read it as a wait, not as a pick
+    targets = [[-15.0, -1.0, 0.3], [-14.0, -1.0, 0.3]]
+    blocks = [block("block_0", -15.0, -1.0, 0.3)]
+    in_wall = blocks_in_the_wall(blocks, targets)
+    assert (
+        free_block_for_slot(blocks, "block_0", set(), (-14.0, -1.0), in_wall)
+        == "block_0"
+    )
+    server = _StubServer(
+        {"c0_b1": "block_0"},
+        [{"block_id": s, "position": t} for s, t in zip(("c0_b0", "c0_b1"), targets)],
+    )
+    chosen, blocked = server._rebind_to_a_free_block(
+        "wall_2_1", {"block_id": "c0_b1"}, (-14.0, -1.0, 0.3), blocks
+    )
+    assert (chosen, blocked) == ("block_0", "block_0 is already in the wall")
+
+
 def test_the_only_pickable_block_is_taken_from_the_slot_it_is_bound_to():
     # else a plan that binds the top block to its last slot never picks anything: every
     # earlier slot is pinned and the one block that can be picked is reserved.
@@ -136,15 +175,12 @@ class _StubServer:
     _physical_block_id = WallPlanServer._physical_block_id
     _rebind_to_a_free_block = WallPlanServer._rebind_to_a_free_block
 
-    def __init__(self, blocks, bindings):
-        self._blocks = blocks
+    def __init__(self, bindings, tasks=()):
         self._block_bindings = {"wall_2_1": dict(bindings)}
+        self._wall_plans = {"wall_2_1": list(tasks)}
         self._output_frame = "world"
         self._goal_client = self._clear_goals_client = None
         self._goal_service_name = self._clear_goals_service_name = ""
-
-    def _get_world_model_blocks(self):
-        return self._blocks
 
     def _make_pose(self, *args):
         return PoseStamped()
@@ -162,9 +198,9 @@ class _StubServer:
 def test_the_server_reports_the_reason_instead_of_the_pinned_block():
     blocks = seibersdorf_storage()
     blocks[2].pose_status = Block.POSE_COARSE  # covers, and is not pickable itself
-    server = _StubServer(blocks, {"c0_b0": "block_1"})
+    server = _StubServer({"c0_b0": "block_1"})
     chosen, blocked = server._rebind_to_a_free_block(
-        "wall_2_1", {"block_id": "c0_b0"}, (-15.0, -1.0, 0.3)
+        "wall_2_1", {"block_id": "c0_b0"}, (-15.0, -1.0, 0.3), blocks
     )
     assert chosen == "block_1"
     assert blocked == "block_1, block_2 covered by block_0"
@@ -173,9 +209,9 @@ def test_the_server_reports_the_reason_instead_of_the_pinned_block():
 def test_a_slot_whose_block_was_taken_gets_the_takers_binding():
     # 327: c0_b0 took c0_b1's block_1; c0_b1 left on block_1 read as occupied once it was placed
     blocks = [block("block_0", 0.0, pose=Block.POSE_UNKNOWN), block("block_1", -14.0)]
-    server = _StubServer(blocks, {"c0_b0": "block_0", "c0_b1": "block_1"})
+    server = _StubServer({"c0_b0": "block_0", "c0_b1": "block_1"})
     chosen, _ = server._rebind_to_a_free_block(
-        "wall_2_1", {"block_id": "c0_b0", "yaw": 0.0}, (-15.0, -1.0, 0.3)
+        "wall_2_1", {"block_id": "c0_b0", "yaw": 0.0}, (-15.0, -1.0, 0.3), blocks
     )
     assert chosen == "block_1"
     assert server._block_bindings["wall_2_1"] == {

@@ -32,7 +32,6 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
-from std_srvs.srv import Trigger
 
 from concrete_block_assembly_planning import terrain
 
@@ -138,6 +137,18 @@ def pickable_blocks(blocks):
     ]
 
 
+def block_pose(blocks, block_id):
+    """``(x, y, z, yaw)`` of a block the world model has a physical pose for, else None.
+
+    None means the block is unknown, or a goal-only entry (POSE_UNKNOWN) nothing can pick yet.
+    """
+    for b in blocks:
+        if b.id == block_id and b.pose_status != Block.POSE_UNKNOWN:
+            p = b.pose.position
+            return (p.x, p.y, p.z, quaternion_to_yaw(b.pose.orientation))
+    return None
+
+
 def covered_reason(covering) -> str:
     """Which block pins which, for the waiting message: ``block_0, block_1 covered by block_2``."""
     by_coverer = {}
@@ -149,7 +160,29 @@ def covered_reason(covering) -> str:
     )
 
 
-def free_block_for_slot(blocks, bound, other_bound, target_xy):
+def blocks_in_the_wall(blocks, slot_targets):
+    """Ids of the blocks sitting on a slot target.
+
+    Half a block's width in xy and half its height in z.
+    A restart rediscovers already-placed wall blocks as TASK_FREE/POSE_PRECISE (21), so only
+    the geometry tells them from a pile block; one in the jaws is merely hovering over the
+    slot, and a goal-only entry has no pose to compare.
+    """
+    return {
+        b.id
+        for b in blocks
+        if b.pose_status != Block.POSE_UNKNOWN
+        and b.task_status != Block.TASK_MOVE
+        and any(
+            math.hypot(b.pose.position.x - t[0], b.pose.position.y - t[1])
+            < BLOCK_SIZE_M[1] / 2.0
+            and abs(b.pose.position.z - t[2]) < BLOCK_SIZE_M[2] / 2.0
+            for t in slot_targets
+        )
+    }
+
+
+def free_block_for_slot(blocks, bound, other_bound, target_xy, in_wall=frozenset()):
     """The id to pick for a slot: ``bound`` if it is pickable, else the pickable block nearest
     the slot's target -- preferring one no other slot is bound to -- else ``bound``.
 
@@ -157,7 +190,9 @@ def free_block_for_slot(blocks, bound, other_bound, target_xy):
     hidden behind another only once that one is picked, so a fixed binding can point at a
     goal-only placeholder, at nothing, or at a block pinned under the one above it.
     """
-    pickable = pickable_blocks(blocks)
+    # A block already in the wall is not stock, whatever the world model calls it after a
+    # restart: without this the nearest "pickable" block to a slot is the one sitting in it.
+    pickable = [b for b in pickable_blocks(blocks) if b.id not in in_wall]
     # In the jaws: rebound away, the pick path would open them over another block (327).
     in_jaws = any(b.id == bound and b.task_status == Block.TASK_MOVE for b in blocks)
     if in_jaws or any(b.id == bound for b in pickable):
@@ -178,12 +213,12 @@ def free_block_for_slot(blocks, bound, other_bound, target_xy):
 # Handing a task out is not progress: a goal cancelled or aborted after the hand-out never
 # places its block, and the plan would skip that slot for good. Only the world model knows a
 # block really landed -- subtree_place_block's WriteBlockPoseFromGripper marks it TASK_PLACED
-# -- so the hand-out is confirmed against that. A reset or a re-activation zeroes progress, but
-# a slot that already holds a placed block is never served again (327: the next block went
-# into the occupied slot).
-def next_task_index(tasks, blocks, bindings, progress, handed_out):
-    """Index to serve: the slot of the block in the jaws; else the first slot from ``progress``
-    (or the outstanding ``handed_out``) that holds no placed block."""
+# -- so the hand-out is confirmed against that. A reset or a re-activation drops the hand-out,
+# but a slot that already holds a block is never served again (327: the next block went into
+# the occupied slot).
+def next_task_index(tasks, blocks, bindings, handed_out):
+    """Index to serve: the slot of the block in the jaws; else the first slot from the
+    outstanding ``handed_out`` that holds no block."""
 
     def bound(task):
         return bindings.get(task["block_id"], task["block_id"])
@@ -192,35 +227,19 @@ def next_task_index(tasks, blocks, bindings, progress, handed_out):
     for idx, task in enumerate(tasks):
         if bound(task) in moving:
             return idx
-    placed = [b for b in blocks if b.task_status == Block.TASK_PLACED]
-    idx = progress if handed_out is None or handed_out >= progress else handed_out
-    while idx < len(tasks) and slot_is_occupied(tasks[idx], bound(tasks[idx]), placed):
+    idx = handed_out or 0
+    while idx < len(tasks) and slot_is_occupied(tasks[idx], bound(tasks[idx]), blocks):
         idx += 1
     return idx
 
 
-def slot_is_occupied(task, bound_id, placed):
-    """Its bound block is placed, or a placed block sits on its target (a rebinding the server
-    lost on restart)."""
+def slot_is_occupied(task, bound_id, blocks):
+    """Its bound block is placed, or some block sits on its target (a rebinding the server lost
+    on restart, or a whole wall rediscovered as TASK_FREE after one)."""
     target = task.get("goal_position") or task.get("position")
-    for b in placed:
-        if b.id == bound_id:
-            return True
-        if target is None or b.pose_status == Block.POSE_UNKNOWN:
-            continue
-        p = b.pose.position
-        if (
-            math.hypot(p.x - target[0], p.y - target[1]) < BLOCK_SIZE_M[1] / 2.0
-            and abs(p.z - target[2]) < BLOCK_SIZE_M[2] / 2.0
-        ):
-            return True
-    return False
-
-
-#: Hover over a raised pickup (truck bed), world z of the K5 goal, 0.99 m over the TCP. What it
-#: clears is the bed's posts, not the block: TCP from K0 4.0 m reaches both bed spots; higher
-#: and the grip server's IK loses the descent near the column (K8 at world 6.5 m failed).
-RAISED_PICKUP_HOVER_Z_M = 6.3
+    if any(b.id == bound_id and b.task_status == Block.TASK_PLACED for b in blocks):
+        return True
+    return target is not None and bool(blocks_in_the_wall(blocks, [target]))
 
 
 class WallPlanServer(Node):
@@ -249,11 +268,11 @@ class WallPlanServer(Node):
         # along the wall build direction so the descent comes in at this angle
         # (clearance from the already-placed neighbour).
         self.declare_parameter("place_approach_height_m", 0.30)
-        self.declare_parameter("place_approach_angle_deg", 4.0)
+        self.declare_parameter("place_approach_angle_deg", 18.0)
         # A2B endpoint Z values, expressed in output_frame. The grip trajectory
         # handles the low final descent from these high clearances.
-        self.declare_parameter("pickup_a2b_approach_z_m", 3.141)
-        self.declare_parameter("place_a2b_approach_z_m", 3.741)
+        self.declare_parameter("pickup_a2b_approach_z_m", 4.441)
+        self.declare_parameter("place_a2b_approach_z_m", 3.841)
         # Terrain height correction. On 'activate', query the detector's local
         # ground model and re-seat every block on the measured ground under its
         # own (x, y), so a plan authored on flat ground still lands on a slope.
@@ -302,7 +321,6 @@ class WallPlanServer(Node):
             self._wall_plan_path = f"{pkg_share}/config/wall_plans.yaml"
 
         self._wall_plans = {}
-        self._progress = {}
         self._handed_out = {}
         self._block_bindings = {}
         self._survey = {}
@@ -330,15 +348,7 @@ class WallPlanServer(Node):
             self._handle_get_next_task,
             callback_group=self._cb_group,
         )
-        # Reload plans from disk (e.g. after the wall setup node persists a new
-        # plan) without restarting the server. Progress is reset.
-        self.create_service(
-            Trigger,
-            "~/reload_plans",
-            self._handle_reload,
-            callback_group=self._cb_group,
-        )
-        # List/activate/clear plans in the world model (e.g. from an RViz panel).
+        # List/reload/activate/clear plans in the world model (e.g. from an RViz panel).
         self.create_service(
             PlanControl,
             "~/plan_control",
@@ -391,7 +401,6 @@ class WallPlanServer(Node):
             data = yaml.safe_load(f) or {}
 
         self._wall_plans = {}
-        self._progress = {}
         self._handed_out = {}
         self._block_bindings = {}
         self._survey = {}
@@ -399,7 +408,6 @@ class WallPlanServer(Node):
         for plan_name, plan_data in data.get("wall_plans", {}).items():
             tasks = self._resolve_plan(plan_name, plan_data)
             self._wall_plans[plan_name] = tasks
-            self._progress[plan_name] = 0
             raw_bindings = plan_data.get("block_bindings")
             if raw_bindings is None and isinstance(global_bindings, dict):
                 raw_bindings = global_bindings.get(plan_name, {})
@@ -422,19 +430,6 @@ class WallPlanServer(Node):
                     f"Wall plan '{plan_name}' block bindings: {pretty}"
                 )
         return len(self._wall_plans)
-
-    def _handle_reload(self, request, response):
-        try:
-            count = self._load_wall_plans()
-            response.success = True
-            response.message = (
-                f"Reloaded {count} wall plan(s) from {self._wall_plan_path}"
-            )
-        except (OSError, yaml.YAMLError) as ex:
-            response.success = False
-            response.message = f"Reload failed: {ex}"
-        self.get_logger().info(response.message)
-        return response
 
     def _handle_plan_control(self, request, response):
         """List/reload plans, or activate/clear a plan's goals in the world model."""
@@ -488,7 +483,7 @@ class WallPlanServer(Node):
                 return response
             # Force a fresh publish even if this plan is already active.
             self._active_goal_plan_name = ""
-            self._progress[plan_name] = 0
+            self._handed_out.pop(plan_name, None)
             ok = self._publish_goals_for_plan(plan_name)
             response.success = ok
             response.active_plan = self._active_goal_plan_name
@@ -732,20 +727,29 @@ class WallPlanServer(Node):
 
         return bindings
 
-    def _rebind_to_a_free_block(self, plan_name, task, target):
+    def _rebind_to_a_free_block(self, plan_name, task, target, blocks):
         """Bind the task's slot to a pickable discovered block if its bound one is not; the
         slot's goal moves with it and the placeholder's goal-only entry is cleared. Returns
         ``(block id, why nothing can be picked)``; the reason is empty in the normal case."""
         slot_id = task["block_id"]
         bound = self._physical_block_id(plan_name, slot_id)
-        blocks = self._get_world_model_blocks() or []
         bindings = self._block_bindings.setdefault(plan_name, {})
         other_bound = {b for s, b in bindings.items() if s != slot_id}
-        chosen = free_block_for_slot(blocks, bound, other_bound, target[:2])
+        in_wall = blocks_in_the_wall(
+            blocks,
+            [
+                t.get("goal_position") or t["position"]
+                for t in self._wall_plans.get(plan_name, [])
+            ],
+        )
+        chosen = free_block_for_slot(blocks, bound, other_bound, target[:2], in_wall)
         # Nothing pickable falls back to the binding itself, which may be the block pinned under
-        # the one above it. Wait for that one to be lifted instead of closing the jaws on this.
+        # the one above it, or -- after a restart reverted the bindings -- one standing in the
+        # wall. Wait instead of closing the jaws on either.
         covering = covering_blocks(blocks)
         blocked = covered_reason(covering) if chosen in covering else ""
+        if not blocked and chosen in in_wall:
+            blocked = f"{chosen} is already in the wall"
         if chosen == bound:
             return bound, blocked
         # Swap, not copy: a slot left bound to a block placed elsewhere reads as occupied (327).
@@ -878,46 +882,6 @@ class WallPlanServer(Node):
 
         return result.blocks.blocks
 
-    def _query_block_pose(self, block_id: str):
-        """Query world model for a block's actual pose. Returns (x, y, z, yaw) or None."""
-        blocks = self._get_world_model_blocks()
-        if blocks is None:
-            return None
-
-        for block in blocks:
-            if block.id == block_id:
-                if block.pose_status == Block.POSE_UNKNOWN:
-                    self.get_logger().warn(
-                        f"Block '{block_id}' is known only as a goal "
-                        "(POSE_UNKNOWN), waiting for a physical pose"
-                    )
-                    return None
-                p = block.pose.position
-                yaw = quaternion_to_yaw(block.pose.orientation)
-                self.get_logger().info(
-                    f"World model pose for '{block_id}': "
-                    f"({p.x:.2f}, {p.y:.2f}, {p.z:.2f}) yaw={math.degrees(yaw):.1f}deg"
-                )
-                return (p.x, p.y, p.z, yaw)
-
-        self.get_logger().warn(
-            f"Block '{block_id}' not found in world model, using YAML fallback"
-        )
-        return None
-
-    def _query_block_goal(self, block_id: str):
-        """Query world model for a block's goal pose. Returns (x, y, z, yaw) or None."""
-        blocks = self._get_world_model_blocks()
-        if blocks is None:
-            return None
-
-        for block in blocks:
-            if block.id == block_id and block.goal_status == Block.GOAL_SET:
-                p = block.goal_pose.position
-                yaw = quaternion_to_yaw(block.goal_pose.orientation)
-                return (p.x, p.y, p.z, yaw)
-        return None
-
     def _make_pose(self, x, y, z, yaw_rad, frame=None):
         pose = PoseStamped()
         pose.header.frame_id = frame if frame is not None else self._output_frame
@@ -952,7 +916,7 @@ class WallPlanServer(Node):
             return response
 
         if request.reset_plan:
-            self._progress[plan_name] = 0
+            self._handed_out.pop(plan_name, None)
             self.get_logger().info(f"Reset progress for plan '{plan_name}'")
 
         if plan_name not in self._wall_plans:
@@ -984,7 +948,6 @@ class WallPlanServer(Node):
             tasks,
             blocks,
             self._block_bindings.get(plan_name, {}),
-            self._progress.get(plan_name, 0),
             self._handed_out.get(plan_name),
         )
         moving = {b.id for b in blocks if b.task_status == Block.TASK_MOVE}
@@ -1014,7 +977,7 @@ class WallPlanServer(Node):
         slot_id = task["block_id"]
         x, y, z = task.get("goal_position") or task["position"]
         physical_block_id, blocked = self._rebind_to_a_free_block(
-            plan_name, task, (x, y, z)
+            plan_name, task, (x, y, z), blocks
         )
         # A wait sends the tree on an empty-hook discovery move: never with this one clamped.
         in_jaws = physical_block_id in moving
@@ -1034,10 +997,9 @@ class WallPlanServer(Node):
             f"reference_physical={reference_block_id or '<none>'}"
         )
 
-        # Query world model for the physical pickup pose. Goal-only entries are
-        # not movable yet; keep the plan index parked on this task until the
-        # physical block has been discovered/seeded.
-        wm_pose = None if blocked else self._query_block_pose(physical_block_id)
+        # Goal-only entries are not movable yet; keep the plan index parked on
+        # this task until the physical block has been discovered/seeded.
+        wm_pose = None if blocked else block_pose(blocks, physical_block_id)
         if wm_pose is None:
             response.success = False
             response.has_task = not in_jaws
@@ -1068,8 +1030,9 @@ class WallPlanServer(Node):
 
         pickup_tool_yaw = normalize_angle(pickup_block_yaw + gripper_yaw_offset)
 
+        target_source = "plan"
         if task.get("target_mode") == "relative_to_world_model":
-            ref_pose = self._query_block_pose(reference_block_id)
+            ref_pose = block_pose(blocks, reference_block_id)
             if ref_pose is not None:
                 rx, ry, rz, ryaw = ref_pose
                 offset = task.get("offset", [0, 0, 0])
@@ -1094,20 +1057,10 @@ class WallPlanServer(Node):
                     f"reference_physical={reference_block_id}: no usable pose"
                 )
                 return response
-        else:
-            # Place pose comes from the world model goal (unified scene); the
-            # plan's resolved YAML position is the fallback if no goal is set.
-            goal_pose = self._query_block_goal(physical_block_id)
-            if goal_pose is not None:
-                x, y, z, block_target_yaw = goal_pose
-                target_source = "world_model_goal"
-            else:
-                target_source = "yaml"
 
         # Handed out, not yet done: next_task_index comes back to this task until the world
         # model says its block is placed.
         self._handed_out[plan_name] = idx
-        self._progress[plan_name] = idx + 1
 
         target_tool_yaw = normalize_angle(block_target_yaw + gripper_yaw_offset)
 
@@ -1128,15 +1081,8 @@ class WallPlanServer(Node):
         # All poses are raw block CoG — grip server handles TCP offset
         # Pose orientation carries the desired TCP yaw for the BT motion nodes.
         response.pickup_pose = self._make_pose(px, py, pz, pickup_tool_yaw)
-        # The configured height is for a block on the ground; over a raised one (truck bed) the
-        # hanging tool would stand among the bed's posts.
-        pickup_hover_z = self._pickup_a2b_approach_z
-        # Disabled lab day 2026-11-04: also fired for a block stacked on a ground one
-        # (world z 1.08 > 0.6). Re-enable for truck pickups.
-        # if pz > self._block_height:
-        #     pickup_hover_z = max(pickup_hover_z, RAISED_PICKUP_HOVER_Z_M)
         response.pickup_approach_pose = self._make_pose(
-            px, py, pickup_hover_z, pickup_tool_yaw
+            px, py, self._pickup_a2b_approach_z, pickup_tool_yaw
         )
         response.target_pose = self._make_pose(x, y, z, target_tool_yaw)
         response.reference_pose = self._make_pose(x, y, z, block_target_yaw)

@@ -13,12 +13,11 @@ import math
 import sys
 import time
 
-import yaml
-
 import rclpy
+import yaml
+from geometry_msgs.msg import Point
 from rclpy.node import Node
 
-from geometry_msgs.msg import Point
 from timber_crane_planning_interfaces.srv import CalcMovement
 
 
@@ -40,7 +39,12 @@ def _parse_seed_blocks(path):
     out = {}
     for b in blocks or []:
         p = b["position"]
-        out[b["id"]] = (float(p[0]), float(p[1]), float(p[2]), float(b.get("yaw_deg", 0.0)))
+        out[b["id"]] = (
+            float(p[0]),
+            float(p[1]),
+            float(p[2]),
+            float(b.get("yaw_deg", 0.0)),
+        )
     return out
 
 
@@ -60,11 +64,16 @@ def _parse_wall_plan(path, plan_name):
         if "absolute_position" not in item:
             continue  # checker only handles absolute plans
         p = item["absolute_position"]
-        seq.append((
-            item["id"], float(p[0]), float(p[1]), float(p[2]),
-            float(item.get("yaw_deg", 0.0)),
-            float(item.get("gripper_yaw_offset_deg", 0.0)),
-        ))
+        seq.append(
+            (
+                item["id"],
+                float(p[0]),
+                float(p[1]),
+                float(p[2]),
+                float(item.get("yaw_deg", 0.0)),
+                float(item.get("gripper_yaw_offset_deg", 0.0)),
+            )
+        )
     return seq
 
 
@@ -80,11 +89,12 @@ class FeasibilityChecker(Node):
         # (gripper jaw) must be within the a2b limit [0.40, 1.42] — the init-pose
         # value 1.5708 is out of range, so default to a valid mid-range angle.
         self.declare_parameter(
-            "q0", [0.785, 0.523599, 0.523602, 0.25, 0.546470, 1.570521, 0.0, 1.0])
-        self.declare_parameter("pickup_a2b_approach_z_m", 3.141)
+            "q0", [0.785, 0.523599, 0.523602, 0.25, 0.546470, 1.570521, 0.0, 1.0]
+        )
+        self.declare_parameter("pickup_a2b_approach_z_m", 4.441)
         self.declare_parameter("place_approach_height_m", 0.30)
-        self.declare_parameter("place_approach_angle_deg", 4.0)
-        self.declare_parameter("place_a2b_approach_z_m", 3.741)
+        self.declare_parameter("place_approach_angle_deg", 18.0)
+        self.declare_parameter("place_a2b_approach_z_m", 3.841)
         self.declare_parameter("service_cooldown_s", 0.20)
         # world -> K0 transform: K0 origin in world (xyz) and yaw (deg).
         self.declare_parameter("world_to_k0_xyz", [-6.939, 0.350, 1.141])
@@ -96,7 +106,9 @@ class FeasibilityChecker(Node):
         self._q0 = [float(v) for v in self.get_parameter("q0").value]
         self._pickup_a2b_z_world = self.get_parameter("pickup_a2b_approach_z_m").value
         self._place_h = self.get_parameter("place_approach_height_m").value
-        self._place_ang = math.radians(self.get_parameter("place_approach_angle_deg").value)
+        self._place_ang = math.radians(
+            self.get_parameter("place_approach_angle_deg").value
+        )
         self._place_a2b_z_world = self.get_parameter("place_a2b_approach_z_m").value
         self._service_cooldown = self.get_parameter("service_cooldown_s").value
         self._k0_off = list(self.get_parameter("world_to_k0_xyz").value)
@@ -108,7 +120,8 @@ class FeasibilityChecker(Node):
             self.get_logger().error(
                 f"A2B service '{svc}' unavailable. The a2b server runs inside the "
                 "sim/MP bringup (it can't run standalone). Launch 'Gazebo model with "
-                "behavior tree (PZS100)', leave it up, then run this check.")
+                "behavior tree (PZS100)', leave it up, then run this check."
+            )
             return
 
         self._run()
@@ -130,7 +143,7 @@ class FeasibilityChecker(Node):
     def _build(self):
         """Return [(label, x_w, y_w, z_w, tcp_yaw_w, is_a2b)] for key poses."""
         plan = _parse_wall_plan(self._wall_plans_file, self._plan_name)
-        offsets = {b[0]: b[5] for b in plan}        # id -> gripper_yaw_offset_deg
+        offsets = {b[0]: b[5] for b in plan}  # id -> gripper_yaw_offset_deg
         seed = _parse_seed_blocks(self._seed_file)
         poses = []
 
@@ -138,15 +151,16 @@ class FeasibilityChecker(Node):
         # contact pose is solved by the grip-trajectory IK.
         for bid, (x, y, z, yaw) in seed.items():
             tcp = math.radians(yaw + offsets.get(bid, 90.0))
-            poses.append((
-                f"{bid} pickup_approach", x, y, self._pickup_a2b_z_world, tcp, True))
+            poses.append(
+                (f"{bid} pickup_approach", x, y, self._pickup_a2b_z_world, tcp, True)
+            )
             poses.append((f"{bid} pickup", x, y, z, tcp, False))
 
         # Place side: A2B goes to lateral pre-place X/Y at carry clearance.
         # The low final approach/contact pose is solved by the grip-trajectory IK.
         prev = None
         lateral = self._place_h * math.tan(self._place_ang)
-        for (bid, x, y, z, yaw, goff) in plan:
+        for bid, x, y, z, yaw, goff in plan:
             tcp = math.radians(yaw + goff)
             bx, by = 0.0, 0.0
             if prev is not None and abs(z - prev[2]) < 1e-3:
@@ -154,8 +168,16 @@ class FeasibilityChecker(Node):
                 n = math.hypot(dx, dy)
                 if n > 1e-6:
                     bx, by = dx / n, dy / n
-            poses.append((f"{bid} place_approach", x + lateral * bx, y + lateral * by,
-                          self._place_a2b_z_world, tcp, True))
+            poses.append(
+                (
+                    f"{bid} place_approach",
+                    x + lateral * bx,
+                    y + lateral * by,
+                    self._place_a2b_z_world,
+                    tcp,
+                    True,
+                )
+            )
             poses.append((f"{bid} place", x, y, z, tcp, False))
             prev = (x, y, z)
         return poses
@@ -179,14 +201,15 @@ class FeasibilityChecker(Node):
         res = future.result()
         if self._service_cooldown > 0.0:
             time.sleep(self._service_cooldown)
-        return (res.success if res is not None else False)
+        return res.success if res is not None else False
 
     def _run(self):
         poses = self._build()
         n_a2b = sum(1 for pose in poses if pose[5])
         self.get_logger().info(
             f"Checking {n_a2b} A2B poses (plan='{self._plan_name}'); "
-            "contact poses are listed but skipped because CalcGripMovement owns them.")
+            "contact poses are listed but skipped because CalcGripMovement owns them."
+        )
         n_pass = 0
         print(f"\n{'pose':<26}{'world (x,y,z)':<26}{'K0 (x,y,z)':<26}{'result'}")
         print("-" * 90)
@@ -196,20 +219,24 @@ class FeasibilityChecker(Node):
         # checker/request is broken (not the block positions).
         cphi = self._q0[0] - self._q0[6]
         cok = self._feasible(4.08, 4.06, 2.30, cphi)
-        print(f"{'CONTROL (start TCP)':<26}"
-              f"{'(reachable)':<26}"
-              f"({4.08:+.2f},{4.06:+.2f},{2.30:+.2f})       "
-              f"{'PASS' if cok else 'FAIL <-- checker/request broken!'}")
+        print(
+            f"{'CONTROL (start TCP)':<26}"
+            f"{'(reachable)':<26}"
+            f"({4.08:+.2f},{4.06:+.2f},{2.30:+.2f})       "
+            f"{'PASS' if cok else 'FAIL <-- checker/request broken!'}"
+        )
         print("-" * 90)
 
-        for (label, xw, yw, zw, tcp, is_a2b) in poses:
+        for label, xw, yw, zw, tcp, is_a2b in poses:
             xk, yk, zk = self._to_k0(xw, yw, zw)
             ok = self._feasible(xk, yk, zk, self._phi_k0(tcp)) if is_a2b else None
             n_pass += int(ok is True)
-            print(f"{label:<26}"
-                  f"({xw:+.2f},{yw:+.2f},{zw:+.2f})       "
-                  f"({xk:+.2f},{yk:+.2f},{zk:+.2f})       "
-                  f"{'PASS' if ok else ('FAIL' if is_a2b else 'SKIP (grip IK)')}")
+            print(
+                f"{label:<26}"
+                f"({xw:+.2f},{yw:+.2f},{zw:+.2f})       "
+                f"({xk:+.2f},{yk:+.2f},{zk:+.2f})       "
+                f"{'PASS' if ok else ('FAIL' if is_a2b else 'SKIP (grip IK)')}"
+            )
         print("-" * 90)
         print(f"{n_pass}/{n_a2b} A2B poses feasible\n")
 

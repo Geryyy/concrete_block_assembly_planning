@@ -30,7 +30,6 @@ test/     test_wall_expander.py, test_wall_validator.py
 | Name | Type | Direction | Node |
 |---|---|---|---|
 | `~/get_next_assembly_task` | `concrete_block_assembly_interfaces/GetNextAssemblyTask` | **server** | `wall_plan_server` |
-| `~/reload_plans` | `std_srvs/Trigger` | server | `wall_plan_server` |
 | `/world_model_node/set_block_goal` | `concrete_block_world_model_interfaces/SetBlockGoal` | **client** | `wall_plan_server` |
 | `~/confirm_wall_origin` | `concrete_block_assembly_interfaces/ConfirmWallOrigin` | **server** | `wall_setup_node` |
 | `~/goal_wall_markers`, `~/goal_wall_blocks` | `MarkerArray`, `BlockArray` | publisher | `wall_setup_node`, `wall_preview_node` |
