@@ -37,18 +37,16 @@ wall_plans:
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
       absolute_position: [-15.0, -1.0, 0.3]
-    # Pitch 0.90, the block's own length: back to back. The angled entry comes from the open
-    # side, so the neighbour stops the block there and placement error only opens the gap,
-    # while the bridge above seats on both studs up to 0.92 (readiness A2, 10 mm stud
-    # clearance on a 300 pitch).
+    # Pitch 0.89: aimed 1 cm into the neighbour; the side entry stops short or the neighbour stops
+    # it, landing 0.90-0.92, the window the bridge above seats on.
     - id: c0_b1
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-14.10, -1.0, 0.3]
+      absolute_position: [-14.11, -1.0, 0.3]
     - id: c0_b2
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-13.20, -1.0, 0.3]
+      absolute_position: [-13.22, -1.0, 0.3]
     - id: c1_b0
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
@@ -56,7 +54,7 @@ wall_plans:
     - id: c1_b1
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-13.80, -1.0, 0.9]
+      absolute_position: [-13.81, -1.0, 0.9]
   # example_wall's first three: two on the ground, one bridging them
   wall_2_1:
     block_bindings: {c0_b0: block_0, c0_b1: block_1, c1_b0: block_2}
@@ -69,7 +67,7 @@ wall_plans:
     - id: c0_b1
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-14.10, -1.0, 0.3]
+      absolute_position: [-14.11, -1.0, 0.3]
     - id: c1_b0
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
@@ -116,4 +114,4 @@ wall_plans:
     - id: c0_b1
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-14.10, -1.0, 0.3]
+      absolute_position: [-14.11, -1.0, 0.3]
