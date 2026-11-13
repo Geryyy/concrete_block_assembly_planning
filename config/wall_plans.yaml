@@ -26,25 +26,29 @@ wall_plans:
       c1_b1: block_4}
     # Where the crane looks from for a block it has not found yet: beside the pickup rows,
     # off the column-mounted lidar's line of sight, so the hanging gripper hides none.
-    # y 3.9, behind the row the plans' +2 m put at y 2.0 (lab day 2026-11-04). Not 4.0:
-    # /a2b_movement refuses that goal, 0.085 m of hedge clearance against the 0.100 m it
-    # requires. 3.9 is the nearest that plans, measured - so its margin is about the
-    # required 0.100 m, on a rigid model and a hand-placed hedge box. 3.5 plans the same
-    # and clears the lidar's line to block_2 just as well, if a lab day wants the margin.
-    survey_position: [-14.5, 3.9]
+    # y 3.5, behind the row the plans' +2 m put at y 2.0 (lab day 2026-11-04), and it clears
+    # the lidar's line to block_2 just as well as the 3.9 it replaces (332). 3.9 was the
+    # nearest that plans at all - 4.0 is refused, 0.085 m of hedge clearance against the
+    # 0.100 m /a2b_movement requires - so its margin was about 0.1 m on a rigid model and a
+    # hand-placed hedge box, which is not a margin at Seibersdorf (readiness R11).
+    survey_position: [-14.5, 3.5]
     sequence:
     - id: c0_b0
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
       absolute_position: [-15.0, -1.0, 0.3]
+    # Pitch 0.90, the block's own length: back to back. The angled entry comes from the open
+    # side, so the neighbour stops the block there and placement error only opens the gap,
+    # while the bridge above seats on both studs up to 0.92 (readiness A2, 10 mm stud
+    # clearance on a 300 pitch).
     - id: c0_b1
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-14.08, -1.0, 0.3]
+      absolute_position: [-14.10, -1.0, 0.3]
     - id: c0_b2
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-13.16, -1.0, 0.3]
+      absolute_position: [-13.20, -1.0, 0.3]
     - id: c1_b0
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
@@ -52,11 +56,11 @@ wall_plans:
     - id: c1_b1
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-13.78, -1.0, 0.9]
+      absolute_position: [-13.80, -1.0, 0.9]
   # example_wall's first three: two on the ground, one bridging them
   wall_2_1:
     block_bindings: {c0_b0: block_0, c0_b1: block_1, c1_b0: block_2}
-    survey_position: [-14.5, 3.9]
+    survey_position: [-14.5, 3.5]
     sequence:
     - id: c0_b0
       yaw_deg: 0.0
@@ -65,7 +69,7 @@ wall_plans:
     - id: c0_b1
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-14.08, -1.0, 0.3]
+      absolute_position: [-14.10, -1.0, 0.3]
     - id: c1_b0
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
@@ -103,7 +107,7 @@ wall_plans:
   # The two blocks of world_model_seed_truck_loading.yaml off the truck bed; run with lift_height:=2.6.
   truck_wall:
     block_bindings: {c0_b0: block_1, c0_b1: block_2}
-    survey_position: [-14.5, 3.9]
+    survey_position: [-14.5, 3.5]
     sequence:
     - id: c0_b0
       yaw_deg: 0.0
@@ -112,4 +116,4 @@ wall_plans:
     - id: c0_b1
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-14.08, -1.0, 0.3]
+      absolute_position: [-14.10, -1.0, 0.3]
