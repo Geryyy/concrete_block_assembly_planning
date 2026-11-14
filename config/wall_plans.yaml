@@ -47,14 +47,19 @@ wall_plans:
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
       absolute_position: [-13.22, -1.0, 0.3]
+    # course 1 seats on the measured block below: course 0's landing error stays out of the bond
     - id: c1_b0
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-14.7, -1.0, 0.9]
+      relative_to_world_model: c0_b0
+      offset: [0.30, 0.0, 0.60]
+      fallback_absolute_position: [-14.7, -1.0, 0.9]
     - id: c1_b1
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-13.81, -1.0, 0.9]
+      relative_to_world_model: c0_b1
+      offset: [0.30, 0.0, 0.60]
+      fallback_absolute_position: [-13.81, -1.0, 0.9]
   # example_wall's first three: two on the ground, one bridging them
   wall_2_1:
     block_bindings: {c0_b0: block_0, c0_b1: block_1, c1_b0: block_2}

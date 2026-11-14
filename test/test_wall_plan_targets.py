@@ -1,10 +1,11 @@
-"""wall_2_1's bridge seats on the block below it, not on an absolute target (340).
+"""Course 1 seats on the block below it, not on an absolute target (340, 356).
 
-Absolute, c0_b0's landing error went straight into the 10 mm stud clearance of the bridge.
+Absolute, the lower block's landing error went straight into the 10 mm stud clearance.
 """
 
 from pathlib import Path
 
+import pytest
 import yaml
 from concrete_block_assembly_planning.wall_plan_server import WallPlanServer
 
@@ -29,16 +30,23 @@ def _tasks(plan_name):
     return {task["block_id"]: task for task in resolved}
 
 
-def test_the_bridge_seats_on_the_block_it_rests_on():
-    tasks = _tasks("wall_2_1")
-    bridge = tasks["c1_b0"]
+@pytest.mark.parametrize(
+    "plan, slot, below",
+    [
+        ("wall_2_1", "c1_b0", "c0_b0"),
+        ("example_wall", "c1_b0", "c0_b0"),
+        ("example_wall", "c1_b1", "c0_b1"),
+    ],
+)
+def test_course_1_seats_on_the_block_it_rests_on(plan, slot, below):
+    tasks = _tasks(plan)
+    bridge = tasks[slot]
     assert bridge["target_mode"] == "relative_to_world_model"
-    assert bridge["reference_block_id"] == "c0_b0"
+    assert bridge["reference_block_id"] == below
     assert bridge["offset"] == [0.30, 0.0, 0.60]
     # The absolute point it used to carry is the fallback, and stays the plan's own geometry:
     # build direction and the slot bookkeeping read `position`, not the world model.
-    assert bridge["position"] == [-14.7, -1.0, 0.9]
-    ground = tasks["c0_b0"]["position"]
+    ground = tasks[below]["position"]
     assert [round(ground[i] + bridge["offset"][i], 3) for i in range(3)] == bridge[
         "position"
     ]

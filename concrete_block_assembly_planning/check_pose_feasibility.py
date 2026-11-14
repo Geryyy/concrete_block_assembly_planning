@@ -49,9 +49,10 @@ def _parse_seed_blocks(path):
 
 
 def _parse_wall_plan(path, plan_name):
-    """Return ordered list of (id, x, y, z, yaw_deg, gripper_yaw_offset_deg).
+    """
+    Return ordered list of (id, x, y, z, yaw_deg, gripper_yaw_offset_deg).
 
-    Only absolute_position entries are resolved (the expander emits all-absolute).
+    A relative_to_world_model entry is checked at its fallback_absolute_position.
     """
     with open(path) as f:
         data = yaml.safe_load(f) or {}
@@ -61,9 +62,9 @@ def _parse_wall_plan(path, plan_name):
         return []
     seq = []
     for item in plan.get("sequence", []):
-        if "absolute_position" not in item:
-            continue  # checker only handles absolute plans
-        p = item["absolute_position"]
+        p = item.get("absolute_position") or item.get("fallback_absolute_position")
+        if p is None:
+            continue  # relative_to a prior plan entry: not resolved here
         seq.append(
             (
                 item["id"],
