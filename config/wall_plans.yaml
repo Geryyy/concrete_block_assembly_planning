@@ -68,10 +68,13 @@ wall_plans:
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
       absolute_position: [-14.11, -1.0, 0.3]
+    # bridge seats on where c0_b0 landed; fallback only shapes the plan, no pose -> waits
     - id: c1_b0
       yaw_deg: 0.0
       gripper_yaw_offset_deg: 90.0
-      absolute_position: [-14.7, -1.0, 0.9]
+      relative_to_world_model: c0_b0
+      offset: [0.30, 0.0, 0.60]
+      fallback_absolute_position: [-14.7, -1.0, 0.9]
   row3:
     block_bindings: {c0_b0: block_0, c0_b1: block_1, c0_b2: block_2}
     sequence:
