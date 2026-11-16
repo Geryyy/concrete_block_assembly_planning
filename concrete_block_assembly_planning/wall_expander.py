@@ -188,7 +188,6 @@ def to_wall_plan(blocks, meta: dict) -> list:
             item["relative_to_world_model"] = ref["id"]
             item["offset"] = [round(b[k] - ref[k], 6) for k in ("x", "y", "z")]
             item["fallback_absolute_position"] = position
-            item["yaw_deg"] = b["yaw_deg"] - ref["yaw_deg"]
         seq.append(item)
     return seq
 

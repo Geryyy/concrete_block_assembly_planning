@@ -786,6 +786,7 @@ class WallPlanServer(Node):
         - relative_to_world_model: target relative to a live world-model block
         """
         resolved = {}
+        resolved_yaw = {}
         tasks = []
         prev_pos = None
         for idx, item in enumerate(plan_data.get("sequence", [])):
@@ -826,7 +827,9 @@ class WallPlanServer(Node):
                 )
                 continue
 
+            yaw_rel = yaw_rad - resolved_yaw.get(reference_block_id, 0.0)  # vs reference's plan
             resolved[block_id] = pos
+            resolved_yaw[block_id] = yaw_rad
             task_id = f"{plan_name}_{idx + 1:02d}_{block_id}"
             # Build direction: from the previous block in the same course (same z)
             # toward this one — i.e. away from the just-placed neighbour. None at
@@ -844,6 +847,7 @@ class WallPlanServer(Node):
                     "block_id": block_id,
                     "position": pos,
                     "yaw": yaw_rad,
+                    "yaw_rel": yaw_rel,
                     "gripper_yaw_offset": gripper_yaw_offset,
                     "target_mode": target_mode,
                     "reference_block_id": reference_block_id,
@@ -1036,10 +1040,15 @@ class WallPlanServer(Node):
             if ref_pose is not None:
                 rx, ry, rz, ryaw = ref_pose
                 offset = task.get("offset", [0, 0, 0])
-                x = rx + offset[0]
-                y = ry + offset[1]
+                # offset follows the reference's yaw error; block is 180 deg symmetric
+                dyaw = normalize_angle(ryaw - (task["yaw"] - task["yaw_rel"]))
+                if abs(dyaw) > math.pi / 2:
+                    dyaw = normalize_angle(dyaw + math.pi)
+                c, s = math.cos(dyaw), math.sin(dyaw)
+                x = rx + c * offset[0] - s * offset[1]
+                y = ry + s * offset[0] + c * offset[1]
                 z = rz + offset[2]
-                block_target_yaw = normalize_angle(ryaw + task["yaw"])
+                block_target_yaw = normalize_angle(ryaw + task["yaw_rel"])
                 target_source = f"world_model:{reference_block_id}"
             else:
                 response.success = False
