@@ -176,6 +176,18 @@ wall_plans:
       yaw_deg: 76.0
       gripper_yaw_offset_deg: 90.0
       absolute_position: [-14.89, 2.33, 0.3]  # 8.2 m: the farthest any plan has placed
+  calib_scene_b12:  # calib_scene without c0_b0, for a block_0 already set down by hand
+    block_bindings: {c0_b1: block_1, c0_b2: block_2}
+    survey_position: [-11.5, 2.5]
+    sequence:
+    - id: c0_b1
+      yaw_deg: 94.0
+      gripper_yaw_offset_deg: 90.0
+      absolute_position: [-12.92, -0.07, 0.3]
+    - id: c0_b2
+      yaw_deg: 76.0
+      gripper_yaw_offset_deg: 90.0
+      absolute_position: [-14.89, 2.33, 0.3]
   row3:
     block_bindings: {c0_b0: block_0, c0_b1: block_1, c0_b2: block_2}
     sequence:
