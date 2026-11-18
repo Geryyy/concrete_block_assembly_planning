@@ -144,6 +144,22 @@ wall_plans:
       relative_to_world_model: c0_b0
       offset: [-0.212, 0.212, 0.60]
       fallback_absolute_position: [-12.612, -0.088, 0.9]
+  calib_scene:  # store -> sensor calibration scene (wiki lidar_slew_calibration): r 3.5/6/8.2 m from the slew axis, bearings +28/+8/-10 deg around q1 -4 deg, broadside; back with wall_2_1_store
+    block_bindings: {c0_b0: block_0, c0_b1: block_1, c0_b2: block_2}
+    survey_position: [-11.5, 2.5]
+    sequence:
+    - id: c0_b0
+      yaw_deg: 114.0
+      gripper_yaw_offset_deg: 90.0
+      absolute_position: [-10.14, -1.07, 0.3]
+    - id: c0_b1
+      yaw_deg: 94.0
+      gripper_yaw_offset_deg: 90.0
+      absolute_position: [-12.92, -0.07, 0.3]
+    - id: c0_b2
+      yaw_deg: 76.0
+      gripper_yaw_offset_deg: 90.0
+      absolute_position: [-14.89, 2.33, 0.3]  # 8.2 m: the farthest any plan has placed
   row3:
     block_bindings: {c0_b0: block_0, c0_b1: block_1, c0_b2: block_2}
     sequence:
